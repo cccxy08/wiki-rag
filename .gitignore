@@ -1,0 +1,15 @@
+﻿# .gitignore
+.env
+__pycache__/
+chroma_db/
+logs/
+.models/
+*.log
+*.pyc
+_error.log
+_stdout.log
+_stderr.log
+.tmp/
+backend/models/
+backend/chroma_db/
+backend/static/
