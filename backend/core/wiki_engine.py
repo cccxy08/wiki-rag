@@ -147,7 +147,12 @@ Wiki 内容：
 
         try:
             return self.llm.chat([
-                {"role": "system", "content": "你是企业知识库助手，只依据提供的 Wiki 内容回答。不确定就说不知道。"},
+                {"role": "system", "content": (
+                    "你是企业知识库助手，只依据提供的 Wiki 内容回答。不确定就说不知道。\n\n"
+                    "语义理解规则：用户可能用不同的表述描述同一件事（如「负责人」=「主管」、"
+                    "「做支付」=「参与支付系统」、「制定报销制度」=「做报销制度」）。"
+                    "请根据提供的 Wiki 内容推理判断，不要因为用词不一致就认为信息不存在。"
+                )},
                 {"role": "user", "content": prompt}
             ])
         except Exception:
@@ -162,8 +167,10 @@ Wiki 内容：
         3. Auto-link cross-references (_auto_link)
         4. Write page
         5. Update backlinks
-        6. Update index
-        7. Append log
+        6. Analyze impact on existing pages (_analyze_impact)
+        7. Update affected pages if needed (_update_pages)
+        8. Update index
+        9. Append log
         """
         from core.llm_provider import detect_model_tier
 
@@ -194,6 +201,13 @@ Wiki 内容：
         # Update backlinks
         modified = self._update_backlinks_for_page(title, wiki_page)
 
+        # 分析影响 → 更新已有页面
+        affected = self._analyze_impact(content, source_name)
+        if affected:
+            updated = self._update_pages(content, source_name, affected)
+            if updated:
+                modified = list(set(modified + updated))
+
         # Update index
         self._update_index(title, fn, source_name)
 
@@ -208,14 +222,26 @@ Wiki 内容：
 {schema[:2000]}
 """ if schema else ""
 
-        prompt = f"""{schema_context}请将以下原始内容整理为一篇结构化的 Wiki 页面。
+        # 读取现有 index，让 LLM 知道已有哪些页面可交叉引用
+        index_context = ""
+        try:
+            index_text = self.paths["index"].read_text(encoding="utf-8")[:2000]
+            if index_text.strip():
+                index_context = f"\n已有 Wiki 页面列表（供交叉引用参考）：\n{index_text}\n"
+        except:
+            pass
+
+        prompt = f"""{schema_context}{index_context}请将以下原始内容整理为一篇结构化的 Wiki 页面。
 
 要求：
 1. 使用 frontmatter（--- 包裹的 YAML）标注 title、type、created、updated、sources、tags
 2. 标题使用 H1（#），章节使用 H2（##）
 3. 使用 [[页面名]] 格式做交叉引用
 4. 保留所有关键信息，不要编造
-5. 末尾添加 ## 参见 章节列出相关页面
+        5. 人物文档必须保留姓名、部门、职位、项目经历
+        6. 制度文档必须标注制度名称、适用范围、生效日期
+        7. 项目文档必须记录负责人、参与人、时间线
+        8. 末尾添加 ## 参见 章节列出相关页面
 
 原始内容：
 {content[:5000]}
@@ -624,11 +650,126 @@ sources: [{source_name}]
     # Backward compat alias
     _log = _append_log
 
-    # Stub placeholders (to be implemented per IMPACT-MAP)
+    # ==================== Impact Analysis & Page Update ====================
+
     def _analyze_impact(self, content, source_name):
-        """TODO: Analyze which existing pages are affected by new content."""
-        return []
+        """LLM determines which existing pages may be affected by new content.
+
+        Strategy:
+        - Skip if < 5 wiki pages (not enough context to analyze)
+        - Provide LLM with page list + new content
+        - LLM returns affected page titles (max 5)
+        - Empty list = no updates needed
+        """
+        pages = self._list_pages()
+        if len(pages) < 5:
+            return []
+
+        # Build compact page list
+        page_lines = []
+        for fp in sorted(pages, key=lambda f: f.stem):
+            page_lines.append(f"- {fp.stem}")
+        page_list = "\n".join(page_lines)
+
+        prompt = f"""你是一个知识库一致性检查助手。判断以下新文档可能影响哪些已有 Wiki 页面。
+
+判断标准：
+1. 新文档提到的人物、部门、项目涉及已有页面 → 可能补充信息
+2. 新文档与已有页面描述有矛盾 → 需要标记
+3. 只看语义相关性，不要求关键词精确匹配
+
+已有 Wiki 页面：
+{page_list}
+
+新文档（来源：{source_name}）：
+{content[:3000]}
+
+请列出可能受影响的页面标题，每行一个，最多 5 个。没有则回复「无」。
+只返回页面标题，不要其他内容。"""
+
+        try:
+            raw = self.llm.chat([
+                {"role": "system", "content": "只返回受影响的页面标题，每行一个，最多 5 个。没有则回复「无」。不输出其他内容。"},
+                {"role": "user", "content": prompt}
+            ])
+            raw = raw.strip()
+            if not raw or "无" in raw:
+                return []
+
+            # Parse titles and filter to actual existing pages
+            valid_titles = {fp.stem for fp in pages}
+            titles = []
+            for line in raw.split("\n"):
+                t = line.strip().lstrip("- *0123456789. #（）()")
+                if t and t not in ("无", "None", "没有", "none"):
+                    titles.append(t)
+
+            return [t for t in titles[:5] if t in valid_titles]
+        except Exception:
+            return []
 
     def _update_pages(self, content, source_name, affected):
-        """TODO: Update affected pages when new content contradicts or extends them."""
-        return []
+        """For each affected page, let LLM decide if update is needed and apply.
+
+        Strategy:
+        - Read each affected page's current content
+        - LLM judges: conflict / supplement / irrelevant
+        - If update needed: append new section (not rewrite entire page)
+        - Write updated page, update cache + backlinks, log
+        - Returns list of actually modified page titles
+        """
+        modified = []
+
+        for title in affected:
+            existing = self.read_page(title)
+            if not existing:
+                continue
+
+            prompt = f"""你是一个知识库编辑助手。判断以下新内容是否需要更新已有 Wiki 页面。
+
+已有页面「{title}」：
+{existing[:3000]}
+
+新内容（来源：{source_name}）：
+{content[:2000]}
+
+判断规则：
+1. 新内容与已有页面矛盾 → 输出更正说明，以「> ⚠️ 待核实：」开头
+2. 新内容补充了已有页面没有的信息 → 输出补充段落
+3. 新内容与已有页面无关 → 只回复 NO_UPDATE
+
+只输出需要追加的内容，不要重复已有信息。不需要更新时只回复 NO_UPDATE。"""
+
+            try:
+                raw = self.llm.chat([
+                    {"role": "system", "content": "你是知识库编辑助手。不需要更新时只回复 NO_UPDATE。需要更新时只输出追加/修改的段落，不重复已有内容。"},
+                    {"role": "user", "content": prompt}
+                ])
+                raw = raw.strip()
+
+                if not raw or raw.upper().startswith("NO_UPDATE"):
+                    continue
+
+                # Clean LLM output
+                addon = self._clean_llm_output(raw)
+
+                # Append to existing page (safe: adds section, doesn't rewrite)
+                updated = existing.rstrip() + "\n\n## 更新记录（来源：{src}）\n\n{addon}".format(src=source_name, addon=addon)
+
+                # Write updated page
+                fn = self._safe_filename(title) + ".md"
+                p = self.paths["pages"] / fn
+                p.write_text(updated, encoding="utf-8")
+                self._page_cache[title] = updated
+
+                # Refresh backlinks for the modified page
+                self._update_backlinks_for_page(title, updated)
+
+                # Log
+                self._append_log("update", f"Updated {title} based on {source_name}")
+
+                modified.append(title)
+            except Exception:
+                continue
+
+        return modified

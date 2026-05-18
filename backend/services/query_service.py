@@ -208,6 +208,16 @@ class QueryService:
         if len(self._session_history[session_id]) > self._max_history:
             self._session_history[session_id] = self._session_history[session_id][-self._max_history:]
 
+
+    def _rag_only_query(self, question: str, top_k: int = 5) -> dict:
+        """只查 RAG，不查 Wiki"""
+        docs = self.rag.retrieve(question, top_k)
+        if not docs:
+            return {"answer": "RAG 中未找到相关信息。", "source": "rag", "source_pages": [], "sources": [], "confidence": "low"}
+        answer = self.rag.answer(question, docs)
+        sources = [{"file": d.get("metadata", {}).get("source", ""), "score": d.get("score", 0)} for d in docs[:3]]
+        return {"answer": answer, "source": "rag", "source_pages": [], "sources": sources, "confidence": "medium"}
+
     def query_with_mode(self, question: str, mode: str = "auto", top_k: int = 5, session_id: str = None) -> dict:
         """
         统一查询入口，支持三种模式：
@@ -217,6 +227,13 @@ class QueryService:
         """
         if mode == "agent":
             return self.agent_query(question)
+        elif mode == "wiki":
+            result = self.query(question, top_k, session_id)
+            if result["source"] == "wiki":
+                return result
+            return {"answer": "Wiki 中未找到相关信息。", "source": "wiki", "source_pages": [], "sources": [], "confidence": "low"}
+        elif mode == "rag":
+            return self._rag_only_query(question, top_k)
         elif mode == "pipeline":
             return self.query(question, top_k, session_id)
         else:  # auto: Wiki 优先 → RAG 兜底 → 好答案回写

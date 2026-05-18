@@ -87,7 +87,10 @@ class RAGEngine:
         return splitter.split_text(full_text)
 
     def index_document(self, file_path: Path) -> int:
-        """索引一个文档：加载 → 切片 → 向量化 → 存入 Chroma"""
+        """索引一个文档：清理旧版本 → 加载 → 切片 → 向量化 → 存入 Chroma"""
+        # P1.2: 增量索引 — 先清理同一文件的旧 chunks，防止重复堆积
+        self._remove_document_chunks(file_path)
+
         try:
             texts = self.load_file(file_path)
         except Exception as e:
@@ -122,18 +125,32 @@ class RAGEngine:
 
         return len(chunks)
 
+    def _remove_document_chunks(self, file_path: Path) -> int:
+        """安全删除同一文件的旧 chunks（按完整路径精确匹配，不会误删其他文档）"""
+        try:
+            existing = self.collection.get(where={"path": str(file_path)})
+            old_ids = existing.get("ids", [])
+            if old_ids:
+                self.collection.delete(ids=old_ids)
+            return len(old_ids)
+        except Exception:
+            # Chroma 首次创建 collection 时 where 查询可能不稳定，降级跳过
+            return 0
+
     # ========== 检索 ==========
 
     def retrieve(self, query: str, top_k: int = None) -> list[dict]:
-        """向量检索"""
+        """向量检索 + 来源去重"""
         if top_k is None:
             top_k = settings.retrieval_top_k
 
         query_embedding = self.embeddings.encode(query, show_progress_bar=False).tolist()
 
+        # P1.1: 取 top_k * 3 个 chunk，去重后再截断，确保 top_k 个来自不同文档
+        fetch_k = top_k * 3
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=fetch_k,
         )
 
         documents = []
@@ -150,7 +167,19 @@ class RAGEngine:
                     "score": score,
                 })
 
-        return documents
+        # 按 source 去重：同一文档只保留最高分的 chunk
+        return self._dedup_by_source(documents, top_k)
+
+    def _dedup_by_source(self, docs: list[dict], top_k: int) -> list[dict]:
+        """按 source 分组去重，每组只保留距离最近的 chunk，返回 top_k 个不同来源"""
+        best = {}
+        for d in docs:
+            src = d.get("metadata", {}).get("source", "__UNKNOWN__")
+            # ChromaDB 距离：越小越相关，所以保留分数最低的 chunk
+            if src not in best or d["score"] < best[src]["score"]:
+                best[src] = d
+        # 距离升序：最近（最相关）的排最前
+        return sorted(best.values(), key=lambda x: x["score"])[:top_k]
 
     def retrieve_with_bm25(self, query: str, top_k: int = None) -> list[dict]:
         """混合检索：向量 + BM25 加权"""
