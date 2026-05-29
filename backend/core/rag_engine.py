@@ -1,11 +1,11 @@
 """RAG 引擎 - 文档加载、切片、向量化、检索"""
 import hashlib
+import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 
@@ -13,6 +13,158 @@ from core.config import settings
 from core.llm_provider import get_llm
 from core.retrieval import Reranker
 
+logger = logging.getLogger(__name__)
+
+
+# ==================== Embedding 抽象层 ====================
+
+class BaseEmbedding:
+    """Embedding 抽象基类，兼容 SentenceTransformer 的 encode / get_sentence_embedding_dimension 接口"""
+
+    def encode(self, texts: Union[str, list[str]], show_progress_bar: bool = False, **kwargs) -> list[list[float]]:
+        raise NotImplementedError
+
+    def get_sentence_embedding_dimension(self) -> int:
+        raise NotImplementedError
+
+
+class LocalEmbedding(BaseEmbedding):
+    """本地 SentenceTransformer Embedding（原方案，需 ~500MB 内存）"""
+
+    def __init__(self, model_name: str, device: str = "cpu"):
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer(model_name, device=device)
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        result = self._model.encode(texts, show_progress_bar=show_progress_bar, **kwargs)
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._model.get_sentence_embedding_dimension()
+
+
+class ZhipuAPIEmbedding(BaseEmbedding):
+    """智谱 Embedding API（零内存，推荐）"""
+
+    # 智谱 embedding-3 固定 2048 维
+    MODEL_DIMS = {
+        "embedding-3": 2048,
+        "embedding-2": 1024,
+    }
+
+    def __init__(self, model: str = "embedding-3", api_key: str = None, batch_size: int = 16):
+        from openai import OpenAI
+        self._model = model
+        self._dimension = self.MODEL_DIMS.get(model, 2048)
+        self._batch_size = batch_size
+        api_key = api_key or settings.zhipu_api_key
+        if not api_key:
+            raise ValueError("智谱 Embedding 需要 ZHIPU_API_KEY，请在 .env 中配置")
+        self._client = OpenAI(
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            api_key=api_key,
+        )
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        import numpy as np
+        was_single = isinstance(texts, str)
+        if was_single:
+            texts = [texts]
+        all_embeddings = []
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"智谱 Embedding API 调用失败 (batch {i // self._batch_size}): {e}")
+                # 降级：返回零向量
+                all_embeddings.extend([[0.0] * self._dimension] * len(batch))
+        result = np.array(all_embeddings)
+        # 单条查询时 squeeze 掉 batch 维度，与 sentence_transformers 行为一致
+        if was_single:
+            return result[0]
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+
+class OpenAIAPIEmbedding(BaseEmbedding):
+    """OpenAI Embedding API（零内存）"""
+
+    # OpenAI 模型维度映射
+    MODEL_DIMS = {
+        "text-embedding-3-small": 1536,
+        "text-embedding-3-large": 3072,
+        "text-embedding-ada-002": 1536,
+    }
+
+    def __init__(self, model: str = "text-embedding-3-small", api_key: str = None,
+                 base_url: str = None, batch_size: int = 16):
+        from openai import OpenAI
+        self._model = model
+        self._dimension = self.MODEL_DIMS.get(model, 1536)
+        self._batch_size = batch_size
+        api_key = api_key or settings.openai_api_key
+        base_url = base_url or settings.openai_base_url
+        if not api_key:
+            raise ValueError("OpenAI Embedding 需要 OPENAI_API_KEY，请在 .env 中配置")
+        self._client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        import numpy as np
+        was_single = isinstance(texts, str)
+        if was_single:
+            texts = [texts]
+        all_embeddings = []
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"OpenAI Embedding API 调用失败 (batch {i // self._batch_size}): {e}")
+                all_embeddings.extend([[0.0] * self._dimension] * len(batch))
+        result = np.array(all_embeddings)
+        # 单条查询时 squeeze 掉 batch 维度，与 sentence_transformers 行为一致
+        if was_single:
+            return result[0]
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+
+def create_embedding() -> BaseEmbedding:
+    """工厂函数：根据 embedding_provider 配置创建 Embedding 实例"""
+    provider = settings.embedding_provider
+    logger.info(f"初始化 Embedding: provider={provider}")
+
+    if provider == "zhipu":
+        return ZhipuAPIEmbedding(
+            model=settings.zhipu_embedding_model,
+        )
+    elif provider == "openai":
+        return OpenAIAPIEmbedding(
+            model=settings.openai_embedding_model,
+        )
+    else:  # local
+        return LocalEmbedding(
+            model_name=settings.embedding_model,
+            device=settings.embedding_device,
+        )
+
+
+# ==================== RAG 引擎 ====================
 
 class RAGEngine:
     """RAG 引擎 - 文档检索与问答"""
@@ -28,7 +180,7 @@ class RAGEngine:
 
     def __init__(self):
         self.llm = get_llm()
-        self.embeddings = SentenceTransformer(settings.embedding_model, device=settings.embedding_device)
+        self.embeddings = create_embedding()
         self.chroma_client = chromadb.PersistentClient(
             path=settings.chroma_persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False),
@@ -52,8 +204,12 @@ class RAGEngine:
         # BM25 索引（懒加载）
         self._bm25 = None
         self._bm25_id_map = {}
-        # Reranker（重排序）
-        self.reranker = Reranker(model_name_or_path=settings.reranker_model_path)
+        # Reranker（重排序）— 按配置决定是否加载
+        if settings.reranker_enabled:
+            self.reranker = Reranker(model_name_or_path=settings.reranker_model_path)
+        else:
+            self.reranker = None
+            logger.info("Reranker 已禁用（reranker_enabled=False），节省 ~1.2GB 内存")
 
     # ========== 文档加载 ==========
 
@@ -315,8 +471,8 @@ class RAGEngine:
         if settings.parent_child_enabled:
             docs = self._map_children_to_parents(docs)
 
-        # Reranker 重排序
-        if self.reranker.available and len(docs) > 1:
+        # Reranker 重排序（仅在启用时）
+        if self.reranker and self.reranker.available and len(docs) > 1:
             docs = self.reranker.rerank(query, docs, top_k=settings.rerank_top_k)
 
         return docs
@@ -442,8 +598,8 @@ class RAGEngine:
         if settings.parent_child_enabled:
             merged = self._map_children_to_parents(merged)
 
-        # ===== Reranker 重排序：交叉编码器精排 =====
-        if self.reranker.available and len(merged) > 1:
+        # ===== Reranker 重排序（仅在启用时） =====
+        if self.reranker and self.reranker.available and len(merged) > 1:
             merged = self.reranker.rerank(query, merged, top_k=settings.rerank_top_k)
 
         return merged

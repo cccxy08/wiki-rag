@@ -655,6 +655,57 @@ body {
   flex-shrink: 0;
 }
 
+/* Mode selector — segmented pill bar */
+.mode-bar {
+  display: flex;
+  gap: 0;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-glass);
+  padding: 3px;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-float);
+}
+
+.mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 550;
+  font-family: inherit;
+  padding: 7px 14px;
+  border-radius: var(--r-full);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-out-cubic),
+    color var(--dur-fast) var(--ease-out-cubic),
+    box-shadow var(--dur-fast) var(--ease-out-cubic);
+  letter-spacing: 0.01em;
+}
+
+.mode-btn.active {
+  background: #fff;
+  color: var(--accent);
+  box-shadow: 0 2px 8px rgba(91,92,230,0.18), 0 0 0 1px rgba(91,92,230,0.12);
+  font-weight: 650;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .mode-btn:not(.active):hover {
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.4);
+  }
+}
+
+.mode-btn:active {
+  transform: scale(0.95);
+  transition: transform var(--dur-micro) var(--ease-out-cubic);
+}
+
 /* Input field — glass */
 .input-wrapper {
   flex: 1;
@@ -879,6 +930,12 @@ body {
 </div>
 
 <div class="input-area">
+  <div class="mode-bar" id="modeBar">
+    <button class="mode-btn active" data-mode="auto">智能</button>
+    <button class="mode-btn" data-mode="wiki">Wiki</button>
+    <button class="mode-btn" data-mode="rag">RAG</button>
+    <button class="mode-btn" data-mode="pipeline">流水线</button>
+  </div>
   <div class="input-wrapper">
     <input
       type="text"
@@ -1013,6 +1070,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Mode selector (module level)
+const modeBar = document.getElementById('modeBar');
+let currentMode = 'auto';
+modeBar.addEventListener('click', e => {
+  const btn = e.target.closest('.mode-btn');
+  if (!btn) return;
+  modeBar.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentMode = btn.dataset.mode;
+});
+
 async function sendQuestion() {
   const question = questionInput.value.trim();
   if (!question) return;
@@ -1023,13 +1091,11 @@ async function sendQuestion() {
   messageCounter = 0;
   showTyping();
 
-  const mode = 'auto';  // Always use auto mode (smart wiki→RAG fallback)
-
   try {
     const res = await fetch('/api/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, mode, top_k: 5 })
+      body: JSON.stringify({ question, mode: currentMode, top_k: 5 })
     });
 
     hideTyping();

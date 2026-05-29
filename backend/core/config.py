@@ -1,4 +1,4 @@
-﻿from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings
 from typing import Optional, Literal
 from pathlib import Path
 
@@ -11,14 +11,28 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     zhipu_api_key: Optional[str] = None
     zhipu_model: str = "glm-4"
-    embedding_model: str = "BAAI/bge-small-zh"
-    embedding_device: str = "cpu"
+
+    # ===== Embedding 配置 =====
+    # local: 本地 SentenceTransformer（需 ~500MB 内存加载 bge-small-zh）
+    # zhipu: 智谱 Embedding API（推荐，零内存，¥0.5/百万token）
+    # openai: OpenAI Embedding API（零内存，$0.02/百万token）
+    embedding_provider: Literal["local", "zhipu", "openai"] = "local"
+    embedding_model: str = "BAAI/bge-small-zh"  # local 模式下的模型名
+    embedding_device: str = "cpu"                # local 模式下的设备
+    zhipu_embedding_model: str = "embedding-3"   # 智谱 Embedding 模型名
+    openai_embedding_model: str = "text-embedding-3-small"  # OpenAI Embedding 模型名
+
+    # ===== 向量库配置 =====
     chroma_persist_dir: str = "./chroma_db"
     chroma_collection_name: str = "enterprise_knowledge"
     chroma_parent_collection_name: str = "enterprise_knowledge_parents"
+
+    # ===== Wiki 数据路径 =====
     wiki_data_dir: str = "../wiki-data"
     wiki_raw_dir: str = "../wiki-data/raw"
     wiki_pages_dir: str = "../wiki-data/wiki"
+
+    # ===== 切片配置 =====
     chunk_size: int = 500
     chunk_overlap: int = 50
     chunk_strategy: dict = {}
@@ -31,7 +45,12 @@ class Settings(BaseSettings):
     rerank_top_k: int = 3
     similarity_threshold: float = 2.0
     bm25_weight: float = 0.3
+
+    # ===== Reranker 配置 =====
+    reranker_enabled: bool = False  # 关闭可省 ~1.2GB 内存，BM25+向量混合检索已够用
     reranker_model_path: str = "./.models/BAAI/bge-reranker-base"
+
+    # ===== Agent 配置 =====
     agent_max_iterations: int = 5
     agent_min_self_score: int = 7
     max_history_rounds: int = 10
@@ -40,6 +59,8 @@ class Settings(BaseSettings):
     score_cache_ttl_seconds: int = 86400
     llm_max_retries: int = 3
     llm_retry_delay_base: float = 1.0
+
+    # ===== 服务配置 =====
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = False

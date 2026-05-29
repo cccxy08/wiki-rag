@@ -13,7 +13,8 @@ from schemas.schemas import (
     LintRequest, LintResponse, LintIssue,
     HealthResponse, SourceInfo,
 )
-from core.llm_provider import get_llm
+# NOTE: get_llm 延迟 import，避免模块加载时拉入 openai 等重依赖导致 OOM
+# from core.llm_provider import get_llm
 
 router = APIRouter(prefix="/api")
 
@@ -110,6 +111,22 @@ def admin_dashboard():
 
 @router.get("/health", response_model=HealthResponse)
 def health():
+    """轻量健康检查：不触发重依赖初始化，避免 OOM"""
+    # 只读配置，不初始化 LLM/WikiEngine/RAGEngine
+    from core.config import settings
+    return HealthResponse(
+        status="ok",
+        llm_provider=settings.llm_provider,
+        llm_model=getattr(settings, f"{settings.llm_provider}_model", "unknown"),
+        wiki_pages=-1,   # 需要初始化 WikiEngine 才能获取，health 不触发
+        vector_count=-1, # 需要初始化 RAGEngine 才能获取，health 不触发
+        uptime_seconds=round(time.time() - START_TIME, 1),
+    )
+
+@router.get("/health/full", response_model=HealthResponse)
+def health_full():
+    """完整健康检查：触发所有组件初始化（内存敏感环境慎用）"""
+    from core.llm_provider import get_llm
     wiki_engine = _get_wiki_engine()
     query_service = _get_query_service()
     llm = get_llm()

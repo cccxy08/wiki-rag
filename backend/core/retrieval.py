@@ -1,6 +1,7 @@
-﻿"""检索增强：Rerank 重排序"""
+"""检索增强：Rerank 重排序"""
 from typing import Optional
 
+from core.config import settings
 
 # NOTE: BM25Retriever 和 merge_results 已删除（死代码）。
 # BM25 混合检索逻辑在 rag_engine.py 中用 jieba 分词实现，
@@ -13,6 +14,9 @@ class Reranker:
     def __init__(self, model_name_or_path: str = "./.models/BAAI/bge-reranker-v2-m3"):
         self._reranker = None
         self._model_path = model_name_or_path
+        # 仅在 reranker_enabled=True 时初始化模型
+        if not settings.reranker_enabled:
+            return
         self._init_model()
 
     def _init_model(self):
