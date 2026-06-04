@@ -1,6 +1,10 @@
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional, Literal
 from pathlib import Path
+
+HF_DATA_DIR = os.environ.get("HF_HOME", "/data") if os.environ.get("SPACE_ID") else None
+RENDER_ENV = bool(os.environ.get("RENDER", ""))
 
 class Settings(BaseSettings):
     llm_provider: Literal["ollama", "openai", "zhipu"] = "ollama"
@@ -72,6 +76,27 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore"
     }
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if HF_DATA_DIR:
+            self._apply_hf_paths()
+        elif RENDER_ENV:
+            self._apply_render_paths()
+
+    def _apply_hf_paths(self):
+        self.chroma_persist_dir = f"{HF_DATA_DIR}/chroma_db"
+        self.wiki_data_dir = f"{HF_DATA_DIR}/wiki-data"
+        self.wiki_raw_dir = f"{HF_DATA_DIR}/wiki-data/raw"
+        self.wiki_pages_dir = f"{HF_DATA_DIR}/wiki-data/wiki"
+        self.log_dir = f"{HF_DATA_DIR}/logs"
+
+    def _apply_render_paths(self):
+        self.chroma_persist_dir = "/app/chroma_db"
+        self.wiki_data_dir = "/app/wiki-data"
+        self.wiki_raw_dir = "/app/wiki-data/raw"
+        self.wiki_pages_dir = "/app/wiki-data/wiki"
+        self.log_dir = "/app/logs"
 
     def get_wiki_paths(self):
         return {
