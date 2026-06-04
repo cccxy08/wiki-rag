@@ -1,12 +1,19 @@
-﻿FROM python:3.10-slim
+FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.hf.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY backend/ .
+COPY wiki-data/ /app/wiki-data/
+COPY start.render.sh /app/start.sh
 
-EXPOSE 8000
+RUN chmod +x /app/start.sh
 
-CMD ["python", "main.py"]
+ENV HOST=0.0.0.0
+ENV PORT=10000
+
+EXPOSE 10000
+
+CMD ["/app/start.sh"]
