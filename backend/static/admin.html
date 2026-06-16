@@ -2393,10 +2393,10 @@ function renderSettingsGroups() {
       </div>
     `;
   }).join('');
-  _enhanceDriveFields();
+  _addDriveHints();
 }
 
-function _enhanceDriveFields() {
+function _addDriveHints() {
   const spaceInput = document.querySelector('input[data-field="dingtalk_drive_space_id"]');
   const folderInput = document.querySelector('input[data-field="dingtalk_drive_folder_id"]');
   if (!spaceInput || !folderInput) return;
@@ -2404,83 +2404,9 @@ function _enhanceDriveFields() {
   const spaceRow = spaceInput.closest('.setting-row');
   const folderRow = folderInput.closest('.setting-row');
 
-  const spaceVal = spaceInput.value;
-  const folderVal = folderInput.value;
-
-  spaceRow.querySelector('.setting-label').innerHTML += ' <button class="btn btn-sm btn-secondary" onclick="loadDriveSpaces(this)" style="margin-left:6px;font-size:11px;padding:2px 8px;">浏览</button>';
-  folderRow.querySelector('.setting-label').innerHTML += ' <button class="btn btn-sm btn-secondary" onclick="loadDriveFolders(this)" style="margin-left:6px;font-size:11px;padding:2px 8px;">浏览</button>';
-
-  spaceInput.style.display = 'none';
-  folderInput.style.display = 'none';
-
-  const spaceSelect = document.createElement('select');
-  spaceSelect.className = 'setting-input';
-  spaceSelect.dataset.field = 'dingtalk_drive_space_id';
-  spaceSelect.style.cssText = 'max-width:300px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;';
-  spaceSelect.innerHTML = spaceVal ? `<option value="${spaceVal}">${spaceVal} (当前)</option>` : '<option value="">-- 选择空间 --</option>';
-  spaceSelect.addEventListener('change', function() {
-    spaceInput.value = this.value;
-    folderInput.value = '';
-    const fs = folderRow.querySelector('select');
-    if (fs) fs.innerHTML = '<option value="">-- 先选择空间 --</option>';
-  });
-  spaceRow.querySelector('.setting-label').after(spaceSelect);
-
-  const folderSelect = document.createElement('select');
-  folderSelect.className = 'setting-input';
-  folderSelect.dataset.field = 'dingtalk_drive_folder_id';
-  folderSelect.style.cssText = 'max-width:300px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;margin-left:8px;';
-  folderSelect.innerHTML = folderVal ? `<option value="${folderVal}">${folderVal} (当前)</option>` : '<option value="">-- 先选择空间 --</option>';
-  folderSelect.addEventListener('change', function() {
-    folderInput.value = this.value;
-  });
-  folderRow.querySelector('.setting-label').after(folderSelect);
-}
-
-async function loadDriveSpaces(btn) {
-  btn.disabled = true;
-  btn.textContent = '加载中...';
-  try {
-    const res = await fetch('/api/dingtalk/drive/spaces');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const select = document.querySelector('select[data-field="dingtalk_drive_space_id"]');
-    const currentVal = document.querySelector('input[data-field="dingtalk_drive_space_id"]').value;
-    select.innerHTML = '<option value="">-- 选择空间 --</option>';
-    for (const s of data.spaces || []) {
-      const sel = s.space_id === currentVal ? ' selected' : '';
-      select.innerHTML += `<option value="${s.space_id}"${sel}>${s.name} (${s.space_id})</option>`;
-    }
-    btn.textContent = '刷新';
-  } catch (e) {
-    alert('获取空间列表失败: ' + e.message);
-    btn.textContent = '浏览';
-  }
-  btn.disabled = false;
-}
-
-async function loadDriveFolders(btn) {
-  const spaceId = document.querySelector('input[data-field="dingtalk_drive_space_id"]').value;
-  if (!spaceId) { alert('请先选择空间'); return; }
-  btn.disabled = true;
-  btn.textContent = '加载中...';
-  try {
-    const res = await fetch(`/api/dingtalk/drive/folders?space_id=${spaceId}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const select = document.querySelector('select[data-field="dingtalk_drive_folder_id"]');
-    const currentVal = document.querySelector('input[data-field="dingtalk_drive_folder_id"]').value;
-    select.innerHTML = '<option value="">-- 选择文件夹 --</option><option value="0">根目录</option>';
-    for (const f of data.folders || []) {
-      const sel = f.folder_id === currentVal ? ' selected' : '';
-      select.innerHTML += `<option value="${f.folder_id}"${sel}>${f.name}</option>`;
-    }
-    btn.textContent = '刷新';
-  } catch (e) {
-    alert('获取文件夹列表失败: ' + e.message);
-    btn.textContent = '浏览';
-  }
-  btn.disabled = false;
+  const hintStyle = 'style="font-size:11px;color:#888;margin-top:2px;line-height:1.4;"';
+  spaceRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>打开钉钉云盘 → URL中 spaceId= 后的数字</div>`);
+  folderRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>打开钉钉云盘文件夹 → URL中 folderId= 后的数字</div>`);
 }
 
 function formatSettingLabel(key) {
