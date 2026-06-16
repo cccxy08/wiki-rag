@@ -123,6 +123,39 @@ async def dingtalk_callback(
     return {"success": True}
 
 
+@router.get("/drive/spaces")
+async def list_drive_spaces():
+    """列出钉钉云盘空间"""
+    if not settings.dingtalk_enabled:
+        raise HTTPException(status_code=404, detail="DingTalk not enabled")
+    try:
+        from services.dingtalk_drive_service import DingTalkDriveService
+        svc = DingTalkDriveService()
+        spaces = svc.list_spaces()
+        return {"spaces": spaces}
+    except Exception as e:
+        logger.error(f"DingTalk list spaces error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/drive/folders")
+async def list_drive_folders(space_id: str = "", parent_folder_id: str = ""):
+    """列出指定空间下的文件夹"""
+    if not settings.dingtalk_enabled:
+        raise HTTPException(status_code=404, detail="DingTalk not enabled")
+    sid = space_id or settings.dingtalk_drive_space_id
+    if not sid:
+        raise HTTPException(status_code=400, detail="space_id required")
+    try:
+        from services.dingtalk_drive_service import DingTalkDriveService
+        svc = DingTalkDriveService()
+        folders = svc.list_folders(sid, parent_folder_id)
+        return {"folders": folders}
+    except Exception as e:
+        logger.error(f"DingTalk list folders error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/sync-drive")
 async def sync_drive():
     """触发钉钉云盘文件同步（供外部cron调用）"""

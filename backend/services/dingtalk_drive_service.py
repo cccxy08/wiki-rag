@@ -44,6 +44,64 @@ class DingTalkDriveService:
             logger.error(f"DingTalk gettoken error: {e}")
             return ""
 
+    def list_spaces(self) -> list[dict]:
+        """列出钉钉云盘所有空间"""
+        token = self._get_access_token()
+        if not token:
+            return []
+
+        try:
+            resp = httpx.get(
+                "https://oapi.dingtalk.com/v1.0/drive/spaces",
+                headers={"x-acs-dingtalk-access-token": token},
+                params={"maxResults": 50},
+                timeout=15,
+            )
+            data = resp.json()
+            spaces = []
+            for item in data.get("items", []):
+                spaces.append({
+                    "space_id": item.get("id", ""),
+                    "name": item.get("name", ""),
+                    "type": item.get("type", ""),
+                })
+            return spaces
+        except Exception as e:
+            logger.error(f"DingTalk list spaces error: {e}")
+            return []
+
+    def list_folders(self, space_id: str, parent_folder_id: str = "") -> list[dict]:
+        """列出指定空间下的文件夹（用于选择同步目录）"""
+        token = self._get_access_token()
+        if not token:
+            return []
+
+        folder_id = parent_folder_id or "0"
+        try:
+            body = {
+                "parentId": folder_id,
+                "maxResults": 100,
+            }
+            resp = httpx.post(
+                f"https://oapi.dingtalk.com/v1.0/drive/spaces/{space_id}/files/{folder_id}/children",
+                headers={"x-acs-dingtalk-access-token": token},
+                json=body,
+                timeout=15,
+            )
+            data = resp.json()
+            folders = []
+            for item in data.get("items", []):
+                if item.get("type") == "folder":
+                    folders.append({
+                        "folder_id": item.get("id", ""),
+                        "name": item.get("name", ""),
+                        "modified_time": item.get("modifiedTime", ""),
+                    })
+            return folders
+        except Exception as e:
+            logger.error(f"DingTalk list folders error: {e}")
+            return []
+
     def list_folder_files(self, space_id: str, folder_id: str) -> list[dict]:
         """列出钉钉云盘指定文件夹下的文件"""
         token = self._get_access_token()
