@@ -139,9 +139,10 @@ class OllamaProvider(LLMProvider):
 
     def __init__(self):
         super().__init__()
+        api_key = getattr(settings, 'ollama_api_key', None) or "ollama"
         self.client = OpenAI(
             base_url=f"{settings.ollama_base_url}/v1",
-            api_key="ollama"
+            api_key=api_key
         )
         self._model = settings.ollama_model
 
@@ -261,6 +262,65 @@ class ZhipuProvider(LLMProvider):
                 yield chunk.choices[0].delta.content
 
 
+class MiniMaxProvider(LLMProvider):
+    """MiniMax API — 文本模型 + 多模态模型，兼容 OpenAI SDK"""
+
+    def __init__(self):
+        super().__init__()
+        if not settings.minimax_api_key:
+            raise ValueError("MINIMAX_API_KEY 未设置")
+        self._client = OpenAI(
+            base_url=settings.minimax_base_url,
+            api_key=settings.minimax_api_key
+        )
+        self._text_model = settings.minimax_model
+        self._vl_model = settings.minimax_multimodal_model
+
+    @property
+    def model_name(self) -> str:
+        return self._text_model
+
+    def _choose_model(self, messages: list[dict]) -> str:
+        """自动选择模型：消息中包含图片/PDF则用视觉模型，否则文本模型"""
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in ("image_url", "image"):
+                        return self._vl_model
+            if isinstance(content, str) and "data:image" in content:
+                return self._vl_model
+        return self._text_model
+
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        model = self._choose_model(messages)
+        if settings.debug:
+            import sys
+            print(f"[LLM-DEBUG] MiniMax: base_url={settings.minimax_base_url} model={model}", file=sys.stderr)
+        response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=stream,
+            temperature=0.3,
+        )
+        if response.usage:
+            prefix = f"[LLM] {label}" if label else "[LLM]"
+            print(f"{prefix} model={model} prompt={response.usage.prompt_tokens} completion={response.usage.completion_tokens} total={response.usage.total_tokens}")
+        return response.choices[0].message.content or ""
+
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        model = self._choose_model(messages)
+        response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
 
 def detect_model_tier(model_name: str) -> str:
     """检测模型能力层级: small / medium / large
@@ -284,8 +344,10 @@ def detect_model_tier(model_name: str) -> str:
     if has_token("glm-4") or contains("glm-4"):
         return "large"
     if contains("deepseek") and not has_token("7b", "8b", "1.3b", "1.5b"):
-        return "large"  # deepseek-chat / deepseek-v3 = large; deepseek-7b ≠ large
+        return "large"
     if contains("qwen-max", "qwen2.5-max"):
+        return "large"
+    if has_token("minimax") or contains("minimax"):
         return "large"
 
     # === Medium: 中等规模 ===
@@ -311,6 +373,7 @@ def get_llm() -> LLMProvider:
         "ollama": OllamaProvider,
         "openai": OpenAIProvider,
         "zhipu": ZhipuProvider,
+        "minimax": MiniMaxProvider,
     }
     provider_class = provider_map.get(settings.llm_provider)
     if provider_class is None:

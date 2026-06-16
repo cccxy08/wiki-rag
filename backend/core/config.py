@@ -7,14 +7,21 @@ HF_DATA_DIR = os.environ.get("HF_HOME", "/data") if os.environ.get("SPACE_ID") e
 RENDER_ENV = bool(os.environ.get("RENDER", ""))
 
 class Settings(BaseSettings):
-    llm_provider: Literal["ollama", "openai", "zhipu"] = "ollama"
+    llm_provider: Literal["ollama", "openai", "zhipu", "minimax"] = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3"
+    ollama_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
     zhipu_api_key: Optional[str] = None
     zhipu_model: str = "glm-4"
+
+    # ===== MiniMax 配置 =====
+    minimax_api_key: Optional[str] = None
+    minimax_model: str = "MiniMax-Text-01"
+    minimax_multimodal_model: str = "MiniMax-VL-01"
+    minimax_base_url: str = "https://api.minimax.chat/v1"
 
     # ===== Embedding 配置 =====
     # local: 本地 SentenceTransformer（需 ~500MB 内存加载 bge-small-zh）
@@ -70,6 +77,65 @@ class Settings(BaseSettings):
     debug: bool = False
     log_dir: str = "./logs"
     log_level: str = "INFO"
+    log_format: str = "json"
+
+    # ===== 安全配置 =====
+    auth_enabled: bool = False
+    api_keys: str = "[]"
+    cors_origins: str = ""
+    rate_limit_per_minute: int = 60
+    rate_limit_admin_per_minute: int = 20
+
+    # ===== 缓存配置 =====
+    cache_provider: Literal["memory", "redis"] = "memory"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # ===== 批量导入配置 =====
+    batch_max_files: int = 50
+    max_file_size_mb: int = 100
+    batch_concurrency: int = 3
+    max_retry_count: int = 3
+    supported_file_types: str = ".pdf,.txt,.md,.docx,.xlsx,.xls,.csv"
+    history_retention_days: int = 90
+    history_default_page_size: int = 20
+    history_max_page_size: int = 100
+
+    # ===== 沉淀审核配置 =====
+    precipitation_enabled: bool = True
+    precipitation_score_threshold: int = 7
+    precipitation_confirm_timeout_seconds: int = 300
+    version_snapshot_max_versions: int = 10
+
+    # ===== 钉钉机器人配置 =====
+    dingtalk_enabled: bool = False
+    dingtalk_client_id: str = ""
+    dingtalk_client_secret: str = ""
+    dingtalk_robot_code: str = ""
+    dingtalk_mode: Literal["stream", "webhook"] = "webhook"
+    dingtalk_admin_ids: str = ""
+    dingtalk_admin_group_webhook: str = ""
+    dingtalk_message_timeout_seconds: int = 10
+    dingtalk_file_download_timeout_seconds: int = 60
+    dingtalk_stream_reconnect_max_interval_seconds: int = 60
+
+    # ===== 钉钉云盘配置 =====
+    dingtalk_drive_space_id: str = ""
+    dingtalk_drive_folder_id: str = ""
+    dingtalk_drive_sync_interval_hours: int = 72
+
+    # ===== 知识提取配置 =====
+    knowledge_extract_interval_hours: int = 72
+    knowledge_extract_max_conversations: int = 50
+
+    # ===== 目录监控配置 =====
+    watcher_allowed_dirs: str = ""
+    watcher_stable_wait_seconds: float = 5.0
+    watcher_health_check_interval_seconds: int = 30
+
+    # ===== URL 抓取配置 =====
+    url_fetch_timeout_seconds: int = 30
+    url_max_response_size_mb: int = 50
+    url_allowed_schemes: str = "http,https"
 
     model_config = {
         "env_file": ".env",

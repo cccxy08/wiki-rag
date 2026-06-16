@@ -9,6 +9,7 @@ build/
 # 环境变量（含 API Key）
 .env
 .env.*
+!.env.example
 
 # 向量数据库（可重建）
 chroma_db/
@@ -26,6 +27,9 @@ _error.log
 # 临时文件
 .tmp/
 nul
+.spec/
+backend/cache/
+backend/test_*.py
 
 # AI 工具残留
 .arts/

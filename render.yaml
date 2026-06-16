@@ -6,11 +6,13 @@ services:
     dockerfilePath: ./Dockerfile.render
     envVars:
       - key: LLM_PROVIDER
-        value: openai
-      - key: OPENAI_BASE_URL
-        value: https://api.deepseek.com/v1
-      - key: OPENAI_MODEL
-        value: deepseek-chat
+        value: minimax
+      - key: MINIMAX_BASE_URL
+        value: https://api.minimax.chat/v1
+      - key: MINIMAX_MODEL
+        value: MiniMax-Text-01
+      - key: MINIMAX_MULTIMODAL_MODEL
+        value: MiniMax-VL-01
       - key: EMBEDDING_PROVIDER
         value: zhipu
       - key: ZHIPU_EMBEDDING_MODEL
@@ -21,7 +23,15 @@ services:
         value: "true"
       - key: PORT
         value: "10000"
-      - key: OPENAI_API_KEY
+      - key: MINIMAX_API_KEY
         sync: false
       - key: ZHIPU_API_KEY
+        sync: false
+      - key: DINGTALK_ENABLED
+        value: "false"
+      - key: DINGTALK_MODE
+        value: webhook
+      - key: DINGTALK_DRIVE_SPACE_ID
+        sync: false
+      - key: DINGTALK_DRIVE_FOLDER_ID
         sync: false

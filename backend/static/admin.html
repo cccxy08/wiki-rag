@@ -370,6 +370,294 @@
   .upload-result.error h4 { color: #991b1b; }
   .upload-result ul { margin-left: 18px; }
 
+  /* ====== Precipitation Review ====== */
+  .precip-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .precip-stat-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    text-align: center;
+  }
+  .precip-stat-card .ps-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1f1f1f;
+  }
+  .precip-stat-card .ps-label {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+  }
+  .precip-stat-card.highlight .ps-value { color: #1a73e8; }
+  .precip-stat-card.warning .ps-value { color: #fbbc04; }
+  .precip-stat-card.success .ps-value { color: #34a853; }
+  .precip-stat-card.danger .ps-value { color: #ea4335; }
+
+  .precip-filter-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .precip-filter-btn {
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid #dadce0;
+    background: #fff;
+    color: #444;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .precip-filter-btn:hover { border-color: #1a73e8; color: #1a73e8; }
+  .precip-filter-btn.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+
+  .precip-card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    border-left: 4px solid #1a73e8;
+    transition: box-shadow 0.2s;
+  }
+  .precip-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+  .precip-card.status-pending_confirm { border-left-color: #fbbc04; }
+  .precip-card.status-pending_review { border-left-color: #1a73e8; }
+  .precip-card.status-approved { border-left-color: #34a853; }
+  .precip-card.status-rejected { border-left-color: #ea4335; }
+  .precip-card.status-revoked { border-left-color: #999; }
+  .precip-card.status-ignored { border-left-color: #cbd5e1; }
+
+  .precip-card .pc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .precip-card .pc-id { font-size: 12px; color: #999; font-family: monospace; }
+  .precip-card .pc-score {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 10px;
+    background: #e8f0fe;
+    color: #1a73e8;
+  }
+  .precip-card .pc-summary {
+    font-size: 14px;
+    color: #1f1f1f;
+    line-height: 1.6;
+    margin-bottom: 10px;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .precip-card .pc-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 12px;
+  }
+  .precip-card .pc-status-badge {
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .pc-status-badge.pending_confirm { background: #fef7e0; color: #92400e; }
+  .pc-status-badge.pending_review { background: #e8f0fe; color: #1a73e8; }
+  .pc-status-badge.approved { background: #dcfce7; color: #166534; }
+  .pc-status-badge.rejected { background: #fee2e2; color: #991b1b; }
+  .pc-status-badge.revoked { background: #f1f5f9; color: #64748b; }
+  .pc-status-badge.ignored { background: #f1f5f9; color: #94a3b8; }
+
+  .precip-card .pc-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding-top: 10px;
+    border-top: 1px solid #f0f0f0;
+  }
+  .precip-card .pc-reason-input {
+    flex: 1;
+    padding: 6px 12px;
+    border: 1px solid #dadce0;
+    border-radius: 8px;
+    font-size: 12px;
+    outline: none;
+  }
+  .precip-card .pc-reason-input:focus { border-color: #1a73e8; }
+
+  .precip-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    font-size: 13px;
+    color: #666;
+  }
+
+  /* ====== Settings Panel ====== */
+  .settings-group {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .settings-group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    background: #f8f9fb;
+    border-bottom: 1px solid #e8eaed;
+    cursor: pointer;
+    user-select: none;
+  }
+  .settings-group-header h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1f1f1f;
+    margin: 0;
+  }
+  .settings-group-header .toggle-icon {
+    font-size: 12px;
+    color: #999;
+    transition: transform 0.2s;
+  }
+  .settings-group-header.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+  }
+  .settings-group-body {
+    padding: 16px 20px;
+  }
+  .settings-group-body.collapsed {
+    display: none;
+  }
+  .setting-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f5f5f5;
+  }
+  .setting-row:last-child {
+    border-bottom: none;
+  }
+  .setting-label {
+    width: 220px;
+    min-width: 220px;
+    font-size: 13px;
+    color: #444;
+    font-weight: 500;
+  }
+  .setting-label .setting-key {
+    font-size: 11px;
+    color: #999;
+    font-family: monospace;
+    margin-top: 1px;
+  }
+  .setting-input {
+    flex: 1;
+    padding: 6px 12px;
+    border: 1px solid #dadce0;
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+    font-family: inherit;
+    max-width: 400px;
+  }
+  .setting-input:focus { border-color: #1a73e8; }
+  .setting-input:disabled {
+    background: #f5f5f5;
+    color: #999;
+    cursor: not-allowed;
+  }
+  .setting-toggle {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    background: #dadce0;
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .setting-toggle.active { background: #1a73e8; }
+  .setting-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .setting-toggle.active::after { transform: translateX(18px); }
+  .setting-readonly-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #f1f5f9;
+    color: #94a3b8;
+    font-weight: 500;
+  }
+  .settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 16px 0;
+    border-top: 1px solid #e8eaed;
+  }
+  .system-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .status-tile {
+    background: #fff;
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .status-tile .st-icon {
+    font-size: 24px;
+  }
+  .status-tile .st-info .st-label {
+    font-size: 12px;
+    color: #999;
+  }
+  .status-tile .st-info .st-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1f1f1f;
+  }
+  .status-tile .st-info .st-detail {
+    font-size: 11px;
+    color: #666;
+    margin-top: 1px;
+  }
+
   /* ====== Progress Bar ====== */
   .progress-bar-container {
     width: 100%;
@@ -655,6 +943,18 @@
     <div class="nav-item" data-tab="ingest" onclick="switchTab('ingest')">
       <span class="nav-icon">📥</span> 文档摄入
     </div>
+    <div class="nav-item" data-tab="precipitation" onclick="switchTab('precipitation')">
+      <span class="nav-icon">✅</span> 沉淀审核
+    </div>
+    <div class="nav-item" data-tab="watcher" onclick="switchTab('watcher')">
+      <span class="nav-icon">👁️</span> 目录监控
+    </div>
+    <div class="nav-item" data-tab="urlimport" onclick="switchTab('urlimport')">
+      <span class="nav-icon">🌐</span> URL 导入
+    </div>
+    <div class="nav-item" data-tab="settings" onclick="switchTab('settings')">
+      <span class="nav-icon">⚙️</span> 系统设置
+    </div>
     <div class="nav-item" data-tab="qa" onclick="switchTab('qa')">
       <span class="nav-icon">💬</span> 问答测试
     </div>
@@ -712,7 +1012,10 @@
         <div class="wiki-right">
           <div class="wiki-right-header">
             <span id="wikiPageMeta">选择一个页面查看内容</span>
-            <button class="btn btn-sm btn-outline" onclick="loadLintResults()" id="lintBtn" title="扫描 Wiki 中的问题，如孤立页面、过期页面、断链等">🔍 Lint 检查</button>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm btn-outline" onclick="loadVersionHistory()" id="versionBtn" title="查看页面版本历史和恢复">📜 版本</button>
+              <button class="btn btn-sm btn-outline" onclick="loadLintResults()" id="lintBtn" title="扫描 Wiki 中的问题，如孤立页面、过期页面、断链等">🔍 Lint</button>
+            </div>
           </div>
           <div class="wiki-content-area" id="wikiContentArea">
             <div class="wiki-empty">
@@ -744,6 +1047,83 @@
         </div>
         <div style="margin-top:8px;font-size:12px;color:#999;text-align:center;" id="progressLabel" hidden></div>
         <div id="ingestResult" hidden></div>
+      </div>
+    </div>
+
+    <!-- ==================== Panel: Precipitation Review ==================== -->
+    <div class="panel" id="panel-precipitation">
+      <div class="precip-stats" id="precipStats">
+        <div class="stat-card"><div class="skeleton skeleton-card"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-card"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-card"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-card"></div></div>
+      </div>
+      <div class="section-card">
+        <h3>✅ 沉淀审核队列</h3>
+        <div class="precip-filter-row" id="precipFilterRow">
+          <button class="precip-filter-btn active" data-status="pending_review" onclick="filterPrecipitation(this, 'pending_review')">待审核</button>
+          <button class="precip-filter-btn" data-status="pending_confirm" onclick="filterPrecipitation(this, 'pending_confirm')">待确认</button>
+          <button class="precip-filter-btn" data-status="approved" onclick="filterPrecipitation(this, 'approved')">已通过</button>
+          <button class="precip-filter-btn" data-status="rejected" onclick="filterPrecipitation(this, 'rejected')">已拒绝</button>
+          <button class="precip-filter-btn" data-status="revoked" onclick="filterPrecipitation(this, 'revoked')">已撤回</button>
+          <button class="precip-filter-btn" data-status="" onclick="filterPrecipitation(this, '')">全部</button>
+          <button class="btn btn-sm btn-secondary" style="margin-left:auto;" onclick="loadPrecipitationList()">🔄 刷新</button>
+        </div>
+        <div id="precipList">
+          <div class="loading-block"><div class="spinner"></div><span>加载中...</span></div>
+        </div>
+        <div class="precip-pagination" id="precipPagination"></div>
+      </div>
+    </div>
+
+    <!-- ==================== Panel: Directory Watcher ==================== -->
+    <div class="panel" id="panel-watcher">
+      <div class="section-card">
+        <h3>👁️ 目录监控 <span class="tooltip-icon" title="监控指定目录，新增文件自动触发摄入">?</span></h3>
+        <div style="display:flex;gap:10px;margin-bottom:16px;">
+          <input type="text" id="watcherDirInput" placeholder="输入监控目录路径..." style="flex:1;padding:8px 12px;border:1px solid #dadce0;border-radius:8px;font-size:13px;outline:none;">
+          <button class="btn btn-primary" onclick="addWatcher()">添加监控</button>
+        </div>
+        <div id="watcherList">
+          <div class="empty-state"><span class="empty-icon">👁️</span><span>暂无目录监控</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== Panel: URL Import ==================== -->
+    <div class="panel" id="panel-urlimport">
+      <div class="section-card">
+        <h3>🌐 URL 导入 <span class="tooltip-icon" title="输入网页 URL，自动抓取正文并摄入到知识库">?</span></h3>
+        <div style="margin-bottom:20px;">
+          <h4 style="font-size:14px;margin-bottom:8px;">单个 URL</h4>
+          <div style="display:flex;gap:10px;">
+            <input type="text" id="singleUrlInput" placeholder="https://example.com/article" style="flex:1;padding:8px 12px;border:1px solid #dadce0;border-radius:8px;font-size:13px;outline:none;">
+            <button class="btn btn-primary" id="urlImportBtn" onclick="importSingleUrl()">导入</button>
+          </div>
+          <div id="singleUrlResult" style="margin-top:8px;"></div>
+        </div>
+        <div>
+          <h4 style="font-size:14px;margin-bottom:8px;">批量 URL</h4>
+          <textarea id="batchUrlInput" placeholder="每行一个 URL..." rows="5" style="width:100%;padding:8px 12px;border:1px solid #dadce0;border-radius:8px;font-size:13px;outline:none;resize:vertical;"></textarea>
+          <div style="margin-top:8px;display:flex;justify-content:flex-end;">
+            <button class="btn btn-primary" id="batchUrlBtn" onclick="importBatchUrl()">批量导入</button>
+          </div>
+          <div id="batchUrlResult" style="margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== Panel: System Settings ==================== -->
+    <div class="panel" id="panel-settings">
+      <div class="system-status-grid" id="systemStatusGrid">
+        <div class="stat-card"><div class="skeleton skeleton-card"></div></div>
+      </div>
+      <div id="settingsGroups">
+        <div class="loading-block"><div class="spinner"></div><span>加载配置中...</span></div>
+      </div>
+      <div class="settings-actions">
+        <button class="btn btn-secondary" onclick="loadSettings()">↩ 重置</button>
+        <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSettings()">💾 保存设置</button>
       </div>
     </div>
 
@@ -797,6 +1177,8 @@ const STATE = {
   selectedWikiPage: null,
   qaHistory: [],
   healthCheckInterval: null,
+  precipFilter: 'pending_review',
+  precipPage: 1,
 };
 
 // ============================
@@ -833,8 +1215,12 @@ function switchTab(tabName) {
   switch (tabName) {
     case 'dashboard': loadDashboard(); break;
     case 'wiki': loadWikiPages(); break;
-    case 'ingest': break; // No auto-load needed
-    case 'qa': break; // No auto-load needed
+    case 'ingest': break;
+    case 'precipitation': loadPrecipitationStats(); loadPrecipitationList(); break;
+    case 'watcher': loadWatcherList(); break;
+    case 'urlimport': break;
+    case 'settings': loadSettings(); loadSystemStatus(); break;
+    case 'qa': break;
     case 'logs': refreshLogs(); break;
   }
 }
@@ -1199,6 +1585,76 @@ async function loadLintResults() {
 }
 
 // ============================
+// Version History
+// ============================
+async function loadVersionHistory() {
+  if (!STATE.selectedWikiPage || !STATE.selectedWikiPage.title) {
+    alert('请先选择一个 Wiki 页面');
+    return;
+  }
+  const title = STATE.selectedWikiPage.title;
+  const lintArea = document.getElementById('lintArea');
+  lintArea.style.display = 'block';
+  lintArea.innerHTML = '<div class="loading-block"><div class="spinner"></div><span>加载版本历史...</span></div>';
+
+  try {
+    const res = await fetch(`/api/wiki/page/${encodeURIComponent(title)}/versions`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const versions = data.versions || [];
+
+    if (versions.length === 0) {
+      lintArea.innerHTML = '<div style="text-align:center;padding:12px;color:#999;font-size:13px;">📭 暂无版本快照</div>';
+      return;
+    }
+
+    lintArea.innerHTML = `
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#444;">📜 版本历史 (${versions.length})</div>
+      ${versions.map(v => `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
+          <span style="color:#666;min-width:130px;">${escapeHtml(v.timestamp)}</span>
+          <span style="color:#999;">${v.size} bytes</span>
+          <button class="btn btn-sm btn-secondary" onclick="viewVersion('${escapeAttr(title)}','${escapeAttr(v.filename)}')">查看</button>
+          <button class="btn btn-sm btn-outline" style="color:#ea4335;border-color:#ea4335;" onclick="restoreVersion('${escapeAttr(title)}','${escapeAttr(v.filename)}')">恢复</button>
+        </div>
+      `).join('')}
+    `;
+  } catch (err) {
+    lintArea.innerHTML = `<div style="color:#ea4335;padding:8px;font-size:12px;">加载失败: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function viewVersion(title, filename) {
+  try {
+    const res = await fetch(`/api/wiki/page/${encodeURIComponent(title)}/versions/${filename}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const contentArea = document.getElementById('wikiContentArea');
+    contentArea.innerHTML = `
+      <div class="page-title-display">📄 ${escapeHtml(title)} <span style="font-size:12px;color:#999;font-weight:400;">— 版本: ${escapeHtml(filename)}</span></div>
+      <div class="wiki-rendered">${renderMarkdown(data.content || '')}</div>
+      <div style="margin-top:12px;">
+        <button class="btn btn-sm btn-secondary" onclick="selectWikiPage('${escapeAttr(title)}')">← 返回当前版本</button>
+      </div>
+    `;
+  } catch (err) {
+    alert('加载版本失败: ' + err.message);
+  }
+}
+
+async function restoreVersion(title, filename) {
+  if (!confirm(`确定要恢复到版本 ${filename} 吗？当前内容将自动保存为新快照。`)) return;
+  try {
+    const res = await fetch(`/api/wiki/page/${encodeURIComponent(title)}/versions/${filename}/restore`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    alert('已恢复到选定版本');
+    selectWikiPage(title);
+  } catch (err) {
+    alert('恢复失败: ' + err.message);
+  }
+}
+
+// ============================
 // Panel: Document Ingestion
 // ============================
 function handleDragOver(e) {
@@ -1519,6 +1975,599 @@ function showError(container, title, message, retryFn) {
       ${retryFn ? '<button class="btn btn-sm btn-primary" onclick="(' + retryFn.toString() + ')()">🔄 重试</button>' : ''}
     </div>
   `;
+}
+
+// ============================
+// Panel: Precipitation Review
+// ============================
+async function loadPrecipitationStats() {
+  const statsEl = document.getElementById('precipStats');
+  try {
+    const res = await fetch('/api/precipitation/stats');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    statsEl.innerHTML = `
+      <div class="precip-stat-card highlight">
+        <div class="ps-value">${data.pendingConfirm || 0}</div>
+        <div class="ps-label">待确认</div>
+      </div>
+      <div class="precip-stat-card warning">
+        <div class="ps-value">${data.pendingReview || 0}</div>
+        <div class="ps-label">待审核</div>
+      </div>
+      <div class="precip-stat-card success">
+        <div class="ps-value">${data.approved || 0}</div>
+        <div class="ps-label">已通过</div>
+      </div>
+      <div class="precip-stat-card danger">
+        <div class="ps-value">${data.rejected || 0}</div>
+        <div class="ps-label">已拒绝</div>
+      </div>
+    `;
+  } catch (err) {
+    statsEl.innerHTML = '';
+  }
+}
+
+async function loadPrecipitationList() {
+  const listEl = document.getElementById('precipList');
+  const pagEl = document.getElementById('precipPagination');
+  listEl.innerHTML = '<div class="loading-block"><div class="spinner"></div><span>加载中...</span></div>';
+
+  try {
+    const status = STATE.precipFilter || '';
+    const page = STATE.precipPage || 1;
+    const url = status
+      ? `/api/precipitation/records?status=${encodeURIComponent(status)}&page=${page}&pageSize=10`
+      : `/api/precipitation/records?page=${page}&pageSize=10`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const records = data.records || [];
+    const total = data.total || 0;
+
+    if (records.length === 0) {
+      listEl.innerHTML = '<div class="empty-state"><span style="font-size:28px;">📭</span><span>暂无沉淀记录</span></div>';
+      pagEl.innerHTML = '';
+      return;
+    }
+
+    listEl.innerHTML = records.map(r => {
+      const statusLabel = {
+        pending_confirm: '待确认',
+        pending_review: '待审核',
+        approved: '已通过',
+        rejected: '已拒绝',
+        revoked: '已撤回',
+        ignored: '已忽略',
+      }[r.status] || r.status;
+
+      let actionsHtml = '';
+      if (r.status === 'pending_review') {
+        actionsHtml = `
+          <div class="pc-actions">
+            <input class="pc-reason-input" id="reason-${r.recordId}" placeholder="拒绝原因（可选）">
+            <button class="btn btn-sm btn-primary" onclick="reviewPrecipitation('${r.recordId}', 'approve')">✓ 通过</button>
+            <button class="btn btn-sm btn-outline" style="color:#ea4335;border-color:#ea4335;" onclick="reviewPrecipitation('${r.recordId}', 'reject')">✗ 拒绝</button>
+          </div>
+        `;
+      }
+      if (r.status === 'approved') {
+        actionsHtml = `
+          <div class="pc-actions">
+            <input class="pc-reason-input" id="revoke-reason-${r.recordId}" placeholder="撤回原因">
+            <button class="btn btn-sm btn-outline" style="color:#ea4335;border-color:#ea4335;" onclick="revokePrecipitation('${r.recordId}')">↩ 撤回</button>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="precip-card status-${r.status}">
+          <div class="pc-header">
+            <span class="pc-id">${escapeHtml(r.recordId)}</span>
+            <span class="pc-score">评分: ${r.llmScore || 0}</span>
+          </div>
+          <div class="pc-summary">${escapeHtml(r.answerSummary || r.answerContent?.substring(0, 200) || '（无内容）')}</div>
+          <div class="pc-meta">
+            <span class="pc-status-badge ${r.status}">${statusLabel}</span>
+            <span>来源: ${escapeHtml(r.source || '—')}</span>
+            <span>创建: ${escapeHtml(r.createdAt || '—')}</span>
+            ${r.confirmedBy ? `<span>确认人: ${escapeHtml(r.confirmedBy)}</span>` : ''}
+            ${r.reviewedBy ? `<span>审核人: ${escapeHtml(r.reviewedBy)}</span>` : ''}
+            ${r.wikiPageTitle ? `<span>Wiki: ${escapeHtml(r.wikiPageTitle)}</span>` : ''}
+          </div>
+          ${actionsHtml}
+        </div>
+      `;
+    }).join('');
+
+    const totalPages = Math.ceil(total / 10);
+    pagEl.innerHTML = total > 10 ? `
+      <button class="btn btn-sm btn-secondary" ${page <= 1 ? 'disabled' : ''} onclick="precipPageNav(${page - 1})">上一页</button>
+      <span>第 ${page} / ${totalPages} 页（共 ${total} 条）</span>
+      <button class="btn btn-sm btn-secondary" ${page >= totalPages ? 'disabled' : ''} onclick="precipPageNav(${page + 1})">下一页</button>
+    ` : `<span>共 ${total} 条</span>`;
+
+  } catch (err) {
+    showError(listEl, '加载沉淀记录失败', err.message, loadPrecipitationList);
+  }
+}
+
+function filterPrecipitation(btn, status) {
+  STATE.precipFilter = status;
+  STATE.precipPage = 1;
+  document.querySelectorAll('.precip-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadPrecipitationList();
+}
+
+function precipPageNav(page) {
+  STATE.precipPage = page;
+  loadPrecipitationList();
+}
+
+async function reviewPrecipitation(recordId, action) {
+  const reasonEl = document.getElementById(`reason-${recordId}`);
+  const reason = reasonEl ? reasonEl.value.trim() : '';
+
+  try {
+    const res = await fetch(`/api/precipitation/review/${recordId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, reason: action === 'reject' ? reason : undefined })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '操作失败');
+    }
+    loadPrecipitationStats();
+    loadPrecipitationList();
+  } catch (err) {
+    alert('操作失败: ' + err.message);
+  }
+}
+
+async function revokePrecipitation(recordId) {
+  const reasonEl = document.getElementById(`revoke-reason-${recordId}`);
+  const reason = reasonEl ? reasonEl.value.trim() : '';
+  if (!reason) {
+    alert('请填写撤回原因');
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/precipitation/revoke/${recordId}?reason=${encodeURIComponent(reason)}`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '撤回失败');
+    }
+    loadPrecipitationStats();
+    loadPrecipitationList();
+  } catch (err) {
+    alert('撤回失败: ' + err.message);
+  }
+}
+
+// ============================
+// Panel: Directory Watcher
+// ============================
+async function loadWatcherList() {
+  const listEl = document.getElementById('watcherList');
+  try {
+    const res = await fetch('/api/ingest/watcher');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const watchers = data.watchers || [];
+    if (watchers.length === 0) {
+      listEl.innerHTML = '<div class="empty-state"><span class="empty-icon">👁️</span><span>暂无目录监控</span></div>';
+      return;
+    }
+    listEl.innerHTML = watchers.map(w => `
+      <div class="section-card" style="margin-bottom:10px;padding:14px 18px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <strong style="font-size:14px;">📁 ${escapeHtml(w.directoryPath)}</strong>
+            <div style="font-size:12px;color:#999;margin-top:2px;">
+              ID: ${escapeHtml(w.dirId)} · 状态: ${escapeHtml(w.status)} · 启动: ${escapeHtml(w.startedAt || '—')}
+            </div>
+          </div>
+          <button class="btn btn-sm btn-outline" style="color:#ea4335;border-color:#ea4335;" onclick="removeWatcher('${escapeAttr(w.dirId)}')">停止</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    listEl.innerHTML = '<div class="empty-state"><span>加载失败: ' + escapeHtml(err.message) + '</span></div>';
+  }
+}
+
+async function addWatcher() {
+  const input = document.getElementById('watcherDirInput');
+  const dir = input.value.trim();
+  if (!dir) return;
+  try {
+    const res = await fetch('/api/ingest/watcher', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: dir })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '添加失败');
+    }
+    input.value = '';
+    loadWatcherList();
+  } catch (err) {
+    alert('添加监控失败: ' + err.message);
+  }
+}
+
+async function removeWatcher(dirId) {
+  try {
+    const res = await fetch(`/api/ingest/watcher/${dirId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '停止失败');
+    }
+    loadWatcherList();
+  } catch (err) {
+    alert('停止监控失败: ' + err.message);
+  }
+}
+
+// ============================
+// Panel: URL Import
+// ============================
+async function importSingleUrl() {
+  const input = document.getElementById('singleUrlInput');
+  const resultEl = document.getElementById('singleUrlResult');
+  const btn = document.getElementById('urlImportBtn');
+  const url = input.value.trim();
+  if (!url) return;
+
+  btn.disabled = true;
+  resultEl.innerHTML = '<div style="color:#666;font-size:13px;">⏳ 正在抓取并导入...</div>';
+
+  try {
+    const res = await fetch('/api/ingest/url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '导入失败');
+    }
+    const data = await res.json();
+    resultEl.innerHTML = `
+      <div class="upload-result">
+        <h4>✅ 导入成功</h4>
+        <ul>
+          <li>状态: ${escapeHtml(data.status || '—')}</li>
+          <li>Wiki 页面: ${escapeHtml((data.wiki_pages || []).join(', ') || '无')}</li>
+          <li>RAG 切片: ${data.rag_chunks || 0}</li>
+        </ul>
+      </div>
+    `;
+  } catch (err) {
+    resultEl.innerHTML = `<div class="upload-result error"><h4>❌ 导入失败</h4><p>${escapeHtml(err.message)}</p></div>`;
+  }
+  btn.disabled = false;
+}
+
+async function importBatchUrl() {
+  const textarea = document.getElementById('batchUrlInput');
+  const resultEl = document.getElementById('batchUrlResult');
+  const btn = document.getElementById('batchUrlBtn');
+  const text = textarea.value.trim();
+  if (!text) return;
+
+  const urls = text.split('\n').map(u => u.trim()).filter(u => u);
+  if (urls.length === 0) return;
+
+  btn.disabled = true;
+  resultEl.innerHTML = '<div style="color:#666;font-size:13px;">⏳ 正在批量导入...</div>';
+
+  try {
+    const res = await fetch('/api/ingest/url/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '批量导入失败');
+    }
+    const data = await res.json();
+    resultEl.innerHTML = `
+      <div class="upload-result">
+        <h4>✅ 批量导入已提交</h4>
+        <ul>
+          <li>任务 ID: ${escapeHtml(data.taskId)}</li>
+          <li>URL 总数: ${data.totalUrls || urls.length}</li>
+        </ul>
+      </div>
+    `;
+  } catch (err) {
+    resultEl.innerHTML = `<div class="upload-result error"><h4>❌ 批量导入失败</h4><p>${escapeHtml(err.message)}</p></div>`;
+  }
+  btn.disabled = false;
+}
+
+// ============================
+// Panel: System Settings
+// ============================
+let _settingsData = null;
+let _settingsMeta = null;
+
+async function loadSettings() {
+  const container = document.getElementById('settingsGroups');
+  container.innerHTML = '<div class="loading-block"><div class="spinner"></div><span>加载配置中...</span></div>';
+
+  try {
+    const res = await fetch('/api/admin/settings');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _settingsData = data.settings;
+    _settingsMeta = {
+      groups: data.groups || [],
+      readonlyKeys: new Set(data.readonlyKeys || []),
+      booleanKeys: new Set(data.booleanKeys || []),
+      intKeys: new Set(data.intKeys || []),
+      floatKeys: new Set(data.floatKeys || []),
+    };
+    renderSettingsGroups();
+  } catch (err) {
+    showError(container, '加载设置失败', err.message, loadSettings);
+  }
+}
+
+function _getTestConnectionBtn(groupKey) {
+  const testable = {
+    llm: { service: 'llm', label: '🔗 测试 LLM 连接' },
+    embedding: { service: 'embedding', label: '🔗 测试 Embedding 连接' },
+    dingtalk: { service: 'dingtalk', label: '🔗 测试钉钉连接' },
+    cache: { service: 'redis', label: '🔗 测试 Redis 连接' },
+  };
+  const cfg = testable[groupKey];
+  if (!cfg) return '';
+  return `
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #f0f0f0;display:flex;align-items:center;gap:10px;">
+      <button class="btn btn-sm btn-secondary" onclick="testConnection('${cfg.service}', this)">${cfg.label}</button>
+      <span class="test-conn-result" id="test-conn-${cfg.service}"></span>
+    </div>
+  `;
+}
+
+function renderSettingsGroups() {
+  const container = document.getElementById('settingsGroups');
+  const { groups, readonlyKeys, booleanKeys, intKeys, floatKeys } = _settingsMeta;
+
+  container.innerHTML = groups.map((group, gi) => {
+    const fields = group.fields.filter(f => _settingsData.hasOwnProperty(f));
+    if (fields.length === 0) return '';
+
+    return `
+      <div class="settings-group">
+        <div class="settings-group-header" onclick="toggleSettingsGroup(this)">
+          <h4>${escapeHtml(group.label)}</h4>
+          <span class="toggle-icon">▼</span>
+        </div>
+        <div class="settings-group-body">
+          ${fields.map(f => {
+            const val = _settingsData[f];
+            const isReadonly = readonlyKeys.has(f);
+            const isBool = booleanKeys.has(f);
+            const isSensitive = f.includes('api_key') || f.includes('secret') || f === 'api_keys';
+
+            if (isBool) {
+              return `
+                <div class="setting-row">
+                  <div class="setting-label">
+                    ${escapeHtml(formatSettingLabel(f))}
+                    <div class="setting-key">${escapeHtml(f)}</div>
+                  </div>
+                  <div class="setting-toggle ${val ? 'active' : ''}" data-field="${f}" onclick="toggleSetting(this)"></div>
+                  ${isReadonly ? '<span class="setting-readonly-badge">只读</span>' : ''}
+                </div>
+              `;
+            }
+
+            const inputType = isSensitive ? 'password' : (intKeys.has(f) || floatKeys.has(f) ? 'number' : 'text');
+            const step = floatKeys.has(f) ? 'step="0.1"' : '';
+            return `
+              <div class="setting-row">
+                <div class="setting-label">
+                  ${escapeHtml(formatSettingLabel(f))}
+                  <div class="setting-key">${escapeHtml(f)}</div>
+                </div>
+                <input class="setting-input" type="${inputType}" data-field="${f}" value="${escapeAttr(String(val ?? ''))}" ${step} ${isReadonly ? 'disabled' : ''}>
+                ${isReadonly ? '<span class="setting-readonly-badge">只读</span>' : ''}
+              </div>
+            `;
+          }).join('')}
+          ${_getTestConnectionBtn(group.key)}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function formatSettingLabel(key) {
+  const labels = {
+    llm_provider: 'LLM 提供商', ollama_base_url: 'Ollama 地址', ollama_model: 'Ollama 模型',
+    openai_api_key: 'OpenAI API Key', openai_model: 'OpenAI 模型', openai_base_url: 'OpenAI 地址',
+    zhipu_api_key: '智谱 API Key', zhipu_model: '智谱模型',
+    embedding_provider: 'Embedding 提供商', embedding_model: 'Embedding 模型', embedding_device: 'Embedding 设备',
+    zhipu_embedding_model: '智谱 Embedding 模型', openai_embedding_model: 'OpenAI Embedding 模型',
+    chunk_size: '切片大小', chunk_overlap: '切片重叠', retrieval_top_k: '检索 Top-K',
+    parent_child_enabled: '父子切片', parent_chunk_size: '父切片大小', child_chunk_size: '子切片大小',
+    child_chunk_overlap: '子切片重叠', parent_chunk_overlap: '父切片重叠',
+    rerank_top_k: 'Rerank Top-K', similarity_threshold: '相似度阈值', bm25_weight: 'BM25 权重',
+    reranker_enabled: 'Reranker', reranker_model_path: 'Reranker 模型路径',
+    agent_max_iterations: '最大迭代数', agent_min_self_score: '最低自评分', max_history_rounds: '最大历史轮数',
+    summary_enabled: '摘要', query_cache_ttl_seconds: '缓存 TTL(秒)', llm_max_retries: 'LLM 重试次数',
+    llm_retry_delay_base: '重试延迟基数', score_cache_ttl_seconds: '评分缓存 TTL(秒)',
+    auth_enabled: 'API 鉴权', rate_limit_per_minute: '限流(次/分)', rate_limit_admin_per_minute: '管理员限流',
+    cors_origins: 'CORS 来源', cache_provider: '缓存提供商', redis_url: 'Redis 地址',
+    batch_max_files: '最大文件数', max_file_size_mb: '最大文件大小(MB)', batch_concurrency: '并发数',
+    max_retry_count: '最大重试数', supported_file_types: '支持格式', history_retention_days: '历史保留天数',
+    precipitation_enabled: '沉淀开关', precipitation_score_threshold: '沉淀评分阈值',
+    precipitation_confirm_timeout_seconds: '确认超时(秒)', version_snapshot_max_versions: '最大版本数',
+    dingtalk_enabled: '钉钉开关', dingtalk_client_id: 'Client ID', dingtalk_robot_code: 'Robot Code',
+    dingtalk_mode: '连接模式', dingtalk_admin_ids: '管理员 ID', dingtalk_admin_group_webhook: '管理员群 Webhook',
+    dingtalk_message_timeout_seconds: '消息超时(秒)', dingtalk_file_download_timeout_seconds: '文件下载超时(秒)',
+    dingtalk_stream_reconnect_max_interval_seconds: '重连最大间隔(秒)',
+    dingtalk_client_secret: 'Client Secret',
+    watcher_allowed_dirs: '允许目录', watcher_stable_wait_seconds: '稳定等待(秒)',
+    watcher_health_check_interval_seconds: '健康检查间隔(秒)',
+    url_fetch_timeout_seconds: '抓取超时(秒)', url_max_response_size_mb: '最大响应(MB)',
+    url_allowed_schemes: '允许协议',
+    log_level: '日志级别', log_format: '日志格式', debug: '调试模式',
+  };
+  return labels[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function toggleSettingsGroup(header) {
+  header.classList.toggle('collapsed');
+  const body = header.nextElementSibling;
+  body.classList.toggle('collapsed');
+}
+
+function toggleSetting(el) {
+  el.classList.toggle('active');
+}
+
+async function saveSettings() {
+  const btn = document.getElementById('saveSettingsBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+
+  const updates = {};
+  document.querySelectorAll('.setting-input').forEach(input => {
+    const field = input.dataset.field;
+    if (field && !input.disabled) {
+      updates[field] = input.value;
+    }
+  });
+  document.querySelectorAll('.setting-toggle').forEach(toggle => {
+    const field = toggle.dataset.field;
+    if (field) {
+      updates[field] = toggle.classList.contains('active');
+    }
+  });
+
+  try {
+    const res = await fetch('/api/admin/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const skippedCount = (data.skipped || []).length;
+    const appliedCount = Object.keys(data.applied || {}).length;
+
+    let msg = `已应用 ${appliedCount} 项设置`;
+    if (skippedCount > 0) {
+      msg += `，跳过 ${skippedCount} 项`;
+    }
+    if (data.restartRequired) {
+      msg += '\n⚠️ 部分设置需重启服务后生效';
+    }
+    alert(msg);
+    loadSettings();
+  } catch (err) {
+    alert('保存失败: ' + err.message);
+  }
+  btn.disabled = false;
+  btn.textContent = '💾 保存设置';
+}
+
+async function testConnection(service, btn) {
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '测试中...';
+  const resultEl = document.getElementById(`test-conn-${service}`);
+
+  try {
+    const res = await fetch('/api/admin/test-connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ service })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.success) {
+      resultEl.innerHTML = `<span style="color:#34a853;font-size:12px;font-weight:500;">✅ ${escapeHtml(data.message)}</span>`;
+    } else {
+      resultEl.innerHTML = `<span style="color:#ea4335;font-size:12px;font-weight:500;">❌ ${escapeHtml(data.message)}</span>`;
+    }
+  } catch (err) {
+    resultEl.innerHTML = `<span style="color:#ea4335;font-size:12px;">测试失败: ${escapeHtml(err.message)}</span>`;
+  }
+  btn.disabled = false;
+  btn.textContent = origText;
+}
+
+async function loadSystemStatus() {
+  const grid = document.getElementById('systemStatusGrid');
+  try {
+    const res = await fetch('/api/admin/system-status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const llm = data.llm || {};
+    const dt = data.dingtalk || {};
+    const cache = data.cache || {};
+    const precip = data.precipitation || {};
+    const watchers = data.watchers || [];
+
+    grid.innerHTML = `
+      <div class="status-tile">
+        <div class="st-icon">🤖</div>
+        <div class="st-info">
+          <div class="st-label">LLM</div>
+          <div class="st-value">${escapeHtml(llm.provider || '—')} / ${escapeHtml(llm.model || '—')}</div>
+        </div>
+      </div>
+      <div class="status-tile">
+        <div class="st-icon">💬</div>
+        <div class="st-info">
+          <div class="st-label">钉钉</div>
+          <div class="st-value">${dt.enabled ? (dt.connected ? '✅ 已连接' : '⚠️ 未连接') : '❌ 未启用'}</div>
+          <div class="st-detail">${dt.enabled ? '模式: ' + escapeHtml(dt.mode || '—') : ''}</div>
+        </div>
+      </div>
+      <div class="status-tile">
+        <div class="st-icon">👁️</div>
+        <div class="st-info">
+          <div class="st-label">目录监控</div>
+          <div class="st-value">${watchers.length} 个监控</div>
+        </div>
+      </div>
+      <div class="status-tile">
+        <div class="st-icon">✅</div>
+        <div class="st-info">
+          <div class="st-label">沉淀审核</div>
+          <div class="st-value">${precip.enabled ? '✅ 已启用' : '❌ 未启用'}</div>
+          <div class="st-detail">${precip.enabled ? '阈值: ' + precip.threshold : ''}</div>
+        </div>
+      </div>
+      <div class="status-tile">
+        <div class="st-icon">⚡</div>
+        <div class="st-info">
+          <div class="st-label">缓存</div>
+          <div class="st-value">${escapeHtml(cache.provider || '—')}</div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    grid.innerHTML = '';
+  }
 }
 
 // ============================

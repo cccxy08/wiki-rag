@@ -1,4 +1,4 @@
-﻿"""文档摄入服务 - 整合 Wiki + RAG 双引擎"""
+"""文档摄入服务 - 整合 Wiki + RAG 双引擎"""
 import shutil
 from pathlib import Path
 
@@ -52,6 +52,46 @@ class IngestService:
             wiki_error = str(e)
 
         # 4. 汇总结果
+        status = "success"
+        if wiki_error and rag_error:
+            status = "failed"
+        elif wiki_error or rag_error:
+            status = "partial"
+
+        return {
+            "status": status,
+            "wiki_pages": wiki_pages,
+            "modified_pages": modified_pages,
+            "rag_chunks": rag_chunks,
+            "wiki_error": wiki_error,
+            "rag_error": rag_error,
+        }
+
+    def ingest_text(self, text: str, source_name: str) -> dict:
+        raw_dir = settings.get_wiki_paths()["raw"]
+        file_path = raw_dir / source_name
+        file_path.write_text(text, encoding="utf-8")
+
+        rag_chunks = 0
+        rag_error = None
+        try:
+            rag_chunks = self.rag.index_document(file_path)
+        except Exception as e:
+            rag_error = str(e)
+
+        wiki_pages = []
+        modified_pages = []
+        wiki_error = None
+        try:
+            if text.strip():
+                result = self.wiki.ingest(text, source_name)
+                wiki_pages = result.get("wiki_pages", [])
+                modified_pages = result.get("modified_pages", [])
+                if result.get("error"):
+                    wiki_error = result["error"]
+        except Exception as e:
+            wiki_error = str(e)
+
         status = "success"
         if wiki_error and rag_error:
             status = "failed"

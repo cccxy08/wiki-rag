@@ -9,6 +9,8 @@ from core.wiki_engine import WikiEngine
 from core.rag_engine import RAGEngine
 from core.llm_provider import get_llm, FALLBACK_MESSAGE
 from core.prompts import load
+from observability.audit import AuditLogger
+from middleware.request_id import request_id_var
 
 # 缓存容量上限，防止 OOM
 _QUERY_CACHE_MAX = 200
@@ -29,19 +31,18 @@ class QueryService:
         self._cache_stats = {"query_hits": 0, "query_misses": 0, "score_hits": 0, "score_misses": 0}
 
     def query(self, question: str, top_k: int = 5, session_id: str = None) -> dict:
-        """
-        查询流程：
-        1. 先查缓存
-        2. 查 Wiki
-        3. Wiki 命中 → 回答
-        4. Wiki 未命中 → RAG 兜底
-        5. RAG 回答好 → 自动存档 Wiki（知识复利）
-        """
+        start = time.time()
+        req_id = request_id_var.get("")
+
         # 1. 缓存检查
         cache_key = hashlib.md5(question.encode()).hexdigest()
         cached = self._check_cache(cache_key)
         if cached:
             cached["cached"] = True
+            AuditLogger.log_query(question, source=cached.get("source", "cache"),
+                                  duration_ms=int((time.time() - start) * 1000),
+                                  confidence=cached.get("confidence", "medium"),
+                                  cached=True, request_id=req_id)
             return cached
 
         # 2. Wiki 查询
@@ -83,15 +84,19 @@ class QueryService:
         score = self._evaluate_answer(question, answer)
         confidence = "high" if score >= 8 else "medium" if score >= 5 else "low"
 
-        # 3.5 知识复利：好答案存档
+        # 3.5 知识复利：创建沉淀记录（不再自动写入 Wiki，等用户确认+管理员审核）
+        precipitation_record_id = None
         if score >= settings.agent_min_self_score:
             try:
-                self.wiki.ingest(
-                    f"问题：{question}\n\n答案：{answer}",
-                    f"qa-{cache_key[:8]}.md"
-                )
-            except (AttributeError, NotImplementedError):
-                pass  # WikiEngine 尚未完整实现，跳过知识复利
+                from services.precipitation_service import PrecipitationService
+                from db.precipitation_db import PrecipitationDB
+                from pathlib import Path
+                db_path = Path(settings.wiki_data_dir) / "precipitation.db"
+                precip_db = PrecipitationDB(db_path)
+                precip_service = PrecipitationService(precip_db)
+                precipitation_record_id = precip_service.create_from_query(question, answer, score, "rag")
+            except Exception:
+                pass
 
         sources = [
             {"file": doc["metadata"].get("source", "unknown"), "score": doc.get("score", 0)}
@@ -105,11 +110,16 @@ class QueryService:
             "sources": sources,
             "confidence": confidence,
             "cached": False,
+            "precipitation_record_id": precipitation_record_id,
         }
 
         self._update_cache(cache_key, result)
         if session_id:
             self._save_to_session(session_id, question, result["answer"])
+
+        AuditLogger.log_query(question, source="rag",
+                              duration_ms=int((time.time() - start) * 1000),
+                              confidence=confidence, cached=False, request_id=req_id)
         return result
 
     def _rewrite_query(self, question: str, entities: list = None) -> str:

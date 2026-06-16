@@ -6,6 +6,12 @@ from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
 from core.config import settings
+from middleware.auth import AuthMiddleware
+from middleware.rate_limit import RateLimitMiddleware
+from middleware.request_id import RequestIdMiddleware
+from middleware.logging import LoggingMiddleware
+from observability.logger import StructuredLogger
+from observability.metrics import MetricsCollector
 
 app = FastAPI(
     title="Wiki-RAG 企业知识问答系统",
@@ -16,39 +22,46 @@ app = FastAPI(
 )
 
 # CORS
+cors_origins = []
+if hasattr(settings, 'cors_origins') and settings.cors_origins:
+    cors_origins = [o.strip() for o in settings.cors_origins.split(',') if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins if cors_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 中间件链（注册顺序与执行顺序相反，实际执行: CORS → RequestId → Auth → RateLimit → Logging）
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(AuthMiddleware)
+app.add_middleware(RequestIdMiddleware)
 
 app.include_router(router)
 
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时检查"""
     import sys; sys.stdout.reconfigure(encoding='utf-8')
+
+    StructuredLogger.setup()
+    MetricsCollector.get_instance().setup(app)
+
+    from core.registry import setup_registry
+    setup_registry()
+
+    if settings.dingtalk_enabled and settings.dingtalk_client_id:
+        from services.dingtalk_service import DingTalkBotService
+        bot = DingTalkBotService()
+        bot.start_stream()
+
     print(f"Wiki-RAG 系统启动中...")
     print(f"   LLM Provider: {settings.llm_provider}")
     print(f"   API 文档: http://{settings.host}:{settings.port}/docs")
-
-    # 挂载静态文件（API 路由优先，不会冲突）
-    print(f"   🖥️  前端页面: http://{settings.host}:{settings.port}/")
-    # 检查 Ollama 连接（如果是 Ollama 模式）
-    # if settings.llm_provider == "ollama":
-    #     try:
-    #         import requests
-    #         resp = requests.get(f"{settings.ollama_base_url}/api/tags", timeout=5)
-    #         if resp.status_code == 200:
-    #             print(f"   ✅ Ollama 连接正常 ({settings.ollama_base_url})")
-    #         else:
-    #             print(f"   ⚠️  Ollama 连接异常: HTTP {resp.status_code}")
-    #     except Exception as e:
-    #         print(f"   ⚠️  Ollama 连接失败: {e}")
-    #         print(f"   系统将启动但 LLM 调用可能失败")
+    print(f"   前端页面: http://{settings.host}:{settings.port}/")
 
 
 # 挂载静态文件（放在路由之后，确保 API 路由优先）

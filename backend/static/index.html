@@ -514,6 +514,75 @@ body {
   margin-top: 6px;
 }
 
+.message.bot .precipitation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-default);
+}
+
+.message.bot .precipitation-hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  flex: 1;
+}
+
+.message.bot .precip-btn {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 5px 14px;
+  border-radius: var(--r-full);
+  cursor: pointer;
+  border: 1px solid var(--border-default);
+  transition: all var(--dur-fast) var(--ease-out-cubic);
+}
+
+.message.bot .precip-btn--confirm {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.message.bot .precip-btn--confirm:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 2px 12px rgba(91,92,230,0.3);
+}
+
+.message.bot .precip-btn--ignore {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+.message.bot .precip-btn--ignore:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.message.bot .precip-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.message.bot .precip-status {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: var(--r-full);
+}
+
+.message.bot .precip-status--confirmed {
+  color: var(--success);
+  background: rgba(46, 172, 142, 0.08);
+  border: 1px solid rgba(46, 172, 142, 0.15);
+}
+
+.message.bot .precip-status--ignored {
+  color: var(--text-tertiary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+}
+
 .message.bot .query-detail {
   font-size: 11px;
   color: var(--text-tertiary);
@@ -1089,6 +1158,14 @@ function addMessage(text, role, extra = {}) {
       if (pc.length > 0) parts.push(`查阅页面: ${escapeHtml(pc.join(', '))}`);
       html += `<div class="query-detail">${parts.join(' | ')}</div>`;
     }
+    if (extra.precipitation_record_id) {
+      const rid = escapeHtml(extra.precipitation_record_id);
+      html += `<div class="precipitation-actions" data-record-id="${rid}">`;
+      html += `<span class="precipitation-hint">💡 这个回答有价值，沉淀到知识库？</span>`;
+      html += `<button class="precip-btn precip-btn--confirm" onclick="confirmPrecipitation(this, '${rid}')">沉淀</button>`;
+      html += `<button class="precip-btn precip-btn--ignore" onclick="ignorePrecipitation(this, '${rid}')">忽略</button>`;
+      html += `</div>`;
+    }
     div.innerHTML = html;
   } else {
     div.textContent = text;
@@ -1172,7 +1249,8 @@ async function sendQuestion() {
       source: data.source || 'unknown',
       confidence: data.confidence || 'medium',
       parsed_question: data.parsed_question || '',
-      pages_consulted: data.pages_consulted || []
+      pages_consulted: data.pages_consulted || [],
+      precipitation_record_id: data.precipitation_record_id || ''
     });
 
   } catch (err) {
@@ -1182,6 +1260,40 @@ async function sendQuestion() {
 
   sendBtn.disabled = false;
   questionInput.focus();
+}
+
+async function confirmPrecipitation(btn, recordId) {
+  const container = btn.closest('.precipitation-actions');
+  const buttons = container.querySelectorAll('.precip-btn');
+  buttons.forEach(b => b.disabled = true);
+  btn.textContent = '提交中...';
+
+  try {
+    const res = await fetch(`/api/precipitation/confirm/${recordId}`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '确认失败');
+    }
+    container.innerHTML = `<span class="precip-status precip-status--confirmed">✓ 已确认，等待管理员审核</span>`;
+  } catch (err) {
+    buttons.forEach(b => b.disabled = false);
+    btn.textContent = '沉淀';
+    alert('确认失败: ' + err.message);
+  }
+}
+
+async function ignorePrecipitation(btn, recordId) {
+  const container = btn.closest('.precipitation-actions');
+  const buttons = container.querySelectorAll('.precip-btn');
+  buttons.forEach(b => b.disabled = true);
+
+  try {
+    await fetch(`/api/precipitation/ignore/${recordId}`, { method: 'POST' });
+    container.innerHTML = `<span class="precip-status precip-status--ignored">已忽略</span>`;
+  } catch (err) {
+    buttons.forEach(b => b.disabled = false);
+    alert('操作失败: ' + err.message);
+  }
 }
 </script>
 </body>
