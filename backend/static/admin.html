@@ -2478,6 +2478,10 @@ async function saveSettings() {
     if (skippedCount > 0) {
       msg += `，跳过 ${skippedCount} 项`;
     }
+    const persistedCount = (data.persisted || []).length;
+    if (persistedCount > 0) {
+      msg += `\n✅ ${persistedCount} 项已持久保存到 .env`;
+    }
     if (data.restartRequired) {
       msg += '\n⚠️ 部分设置需重启服务后生效';
     }

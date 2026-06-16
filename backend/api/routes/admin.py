@@ -185,11 +185,20 @@ def update_settings(req: UpdateSettingsRequest, request: Request):
             import logging
             logging.getLogger(__name__).warning(f"Registry hot-reload failed: {e}")
 
+    persisted = []
+    if applied:
+        try:
+            persisted = settings.save_to_env(applied)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Persist to .env failed: {e}")
+
     return {
         "applied": applied,
         "skipped": skipped,
         "changedFields": list(changed_fields),
         "affectedComponents": affected_components,
+        "persisted": persisted,
         "restartRequired": False,
     }
 

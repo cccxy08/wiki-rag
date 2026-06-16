@@ -173,4 +173,41 @@ class Settings(BaseSettings):
             "log": Path(self.wiki_pages_dir) / "log.md",
         }
 
+    def save_to_env(self, updates: dict[str, object]) -> list[str]:
+        """将指定字段持久化写入 .env 文件，同时更新内存值"""
+        env_path = Path(self.model_config.get("env_file", ".env"))
+        if not env_path.is_absolute():
+            env_path = Path(os.getcwd()) / env_path
+
+        lines: list[str] = []
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+
+        existing_keys: dict[str, int] = {}
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                existing_keys[key.upper()] = i
+
+        saved: list[str] = []
+        for key, value in updates.items():
+            env_key = key.upper()
+            if isinstance(value, bool):
+                str_val = "true" if value else "false"
+            else:
+                str_val = str(value)
+            line_str = f"{env_key}={str_val}"
+
+            if env_key in existing_keys:
+                lines[existing_keys[env_key]] = line_str
+            else:
+                lines.append(line_str)
+
+            setattr(self, key, value)
+            saved.append(key)
+
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return saved
+
 settings = Settings()
