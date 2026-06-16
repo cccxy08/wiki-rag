@@ -154,7 +154,7 @@ def update_settings(req: UpdateSettingsRequest, request: Request):
             skipped.append({"key": key, "reason": "readonly"})
             continue
         if key in SENSITIVE_KEYS:
-            if value == "***":
+            if value == "***" or value == "":
                 skipped.append({"key": key, "reason": "sensitive_unchanged"})
                 continue
         if not hasattr(settings, key):
@@ -279,7 +279,7 @@ def _test_llm_connection() -> dict:
 
 def _test_dingtalk_connection() -> dict:
     if not settings.dingtalk_enabled:
-        return {"success": False, "message": "钉钉未启用"}
+        return {"success": False, "message": f"钉钉未启用 (dingtalk_enabled={settings.dingtalk_enabled}, client_id={'已设' if settings.dingtalk_client_id else '空'}, secret={'已设' if settings.dingtalk_client_secret else '空'})"}
     if not settings.dingtalk_client_id or not settings.dingtalk_client_secret:
         return {"success": False, "message": "Client ID 或 Secret 未配置"}
     try:
