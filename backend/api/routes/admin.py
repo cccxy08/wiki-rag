@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api", tags=["admin"])
 SENSITIVE_KEYS = {"openai_api_key", "zhipu_api_key", "dingtalk_client_secret", "api_keys"}
 READONLY_KEYS = {"wiki_data_dir", "wiki_raw_dir", "wiki_pages_dir", "chroma_persist_dir", "chroma_collection_name", "chroma_parent_collection_name", "host", "port"}
 BOOLEAN_KEYS = {"debug", "auth_enabled", "summary_enabled", "parent_child_enabled", "reranker_enabled", "precipitation_enabled", "dingtalk_enabled"}
-INT_KEYS = {"chunk_size", "chunk_overlap", "retrieval_top_k", "parent_chunk_size", "child_chunk_size", "child_chunk_overlap", "parent_chunk_overlap", "rerank_top_k", "agent_max_iterations", "agent_min_self_score", "max_history_rounds", "query_cache_ttl_seconds", "score_cache_ttl_seconds", "llm_max_retries", "rate_limit_per_minute", "rate_limit_admin_per_minute", "batch_max_files", "max_file_size_mb", "batch_concurrency", "max_retry_count", "history_retention_days", "history_default_page_size", "history_max_page_size", "precipitation_score_threshold", "precipitation_confirm_timeout_seconds", "version_snapshot_max_versions", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds", "watcher_health_check_interval_seconds", "url_fetch_timeout_seconds", "url_max_response_size_mb"}
+INT_KEYS = {"chunk_size", "chunk_overlap", "retrieval_top_k", "parent_chunk_size", "child_chunk_size", "child_chunk_overlap", "parent_chunk_overlap", "rerank_top_k", "agent_max_iterations", "agent_min_self_score", "max_history_rounds", "query_cache_ttl_seconds", "score_cache_ttl_seconds", "llm_max_retries", "rate_limit_per_minute", "rate_limit_admin_per_minute", "batch_max_files", "max_file_size_mb", "batch_concurrency", "max_retry_count", "history_retention_days", "history_default_page_size", "history_max_page_size", "precipitation_score_threshold", "precipitation_confirm_timeout_seconds", "version_snapshot_max_versions", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds", "dingtalk_drive_sync_interval_hours", "knowledge_extract_interval_hours", "knowledge_extract_max_conversations", "watcher_health_check_interval_seconds", "url_fetch_timeout_seconds", "url_max_response_size_mb"}
 FLOAT_KEYS = {"similarity_threshold", "bm25_weight", "llm_retry_delay_base", "watcher_stable_wait_seconds"}
 
 SETTINGS_GROUPS = [
@@ -57,7 +57,7 @@ SETTINGS_GROUPS = [
     {
         "key": "dingtalk",
         "label": "钉钉机器人",
-        "fields": ["dingtalk_enabled", "dingtalk_client_id", "dingtalk_robot_code", "dingtalk_mode", "dingtalk_admin_ids", "dingtalk_admin_group_webhook", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds"],
+        "fields": ["dingtalk_enabled", "dingtalk_client_id", "dingtalk_client_secret", "dingtalk_robot_code", "dingtalk_mode", "dingtalk_admin_ids", "dingtalk_admin_group_webhook", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds", "dingtalk_drive_space_id", "dingtalk_drive_folder_id", "dingtalk_drive_sync_interval_hours", "knowledge_extract_interval_hours", "knowledge_extract_max_conversations"],
     },
     {
         "key": "watcher",

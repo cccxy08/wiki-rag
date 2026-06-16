@@ -1,0 +1,4497 @@
+﻿================================================
+    问答系统 - 所有源代码
+================================================
+
+
+================================================================================
+ 文件: backend\main.py  (2.1KB)
+================================================================================
+
+"""FastAPI 鍏ュ彛 - Wiki-RAG 鍙屽紩鎿庣煡璇嗛棶绛旂郴缁?""
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from api.routes import router
+from core.config import settings
+
+app = FastAPI(
+    title="Wiki-RAG 浼佷笟鐭ヨ瘑闂瓟绯荤粺",
+    description="鍩轰簬 Karpathy LLM Wiki 鑼冨紡 + RAG 鍙屽紩鎿庣殑浼佷笟绾х煡璇嗙鐞嗘柟妗?,
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """鍚姩鏃舵鏌?""
+    import sys; sys.stdout.reconfigure(encoding='utf-8')
+    print(f"Wiki-RAG 绯荤粺鍚姩涓?..")
+    print(f"   LLM Provider: {settings.llm_provider}")
+    print(f"   API 鏂囨。: http://{settings.host}:{settings.port}/docs")
+
+    # 鎸傝浇闈欐€佹枃浠讹紙API 璺敱浼樺厛锛屼笉浼氬啿绐侊級
+    print(f"   馃枼锔? 鍓嶇椤甸潰: http://{settings.host}:{settings.port}/")
+    # 妫€鏌?Ollama 杩炴帴锛堝鏋滄槸 Ollama 妯″紡锛?
+    # if settings.llm_provider == "ollama":
+    #     try:
+    #         import requests
+    #         resp = requests.get(f"{settings.ollama_base_url}/api/tags", timeout=5)
+    #         if resp.status_code == 200:
+    #             print(f"   鉁?Ollama 杩炴帴姝ｅ父 ({settings.ollama_base_url})")
+    #         else:
+    #             print(f"   鈿狅笍  Ollama 杩炴帴寮傚父: HTTP {resp.status_code}")
+    #     except Exception as e:
+    #         print(f"   鈿狅笍  Ollama 杩炴帴澶辫触: {e}")
+    #         print(f"   绯荤粺灏嗗惎鍔ㄤ絾 LLM 璋冪敤鍙兘澶辫触")
+
+
+# 鎸傝浇闈欐€佹枃浠讹紙鏀惧湪璺敱涔嬪悗锛岀‘淇?API 璺敱浼樺厛锛?
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+    )
+
+
+================================================================================
+ 文件: backend\api\routes.py  (8.9KB)
+================================================================================
+
+"""API 路由"""
+import uuid
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, UploadFile, File, Query, HTTPException
+from fastapi.responses import StreamingResponse
+
+from schemas.schemas import (
+    QueryRequest, QueryResponse, IngestResponse,
+    IndexResponse, IndexEntry, WikiPageResponse,
+    LintRequest, LintResponse, LintIssue,
+    HealthResponse, SourceInfo,
+)
+# NOTE: get_llm 延迟 import，避免模块加载时拉入 openai 等重依赖导致 OOM
+# from core.llm_provider import get_llm
+
+router = APIRouter(prefix="/api")
+
+START_TIME = time.time()
+
+# ===== 延迟加载（避免启动时 OOM）=====
+
+_query_service = None
+_ingest_service = None
+_wiki_engine = None
+
+
+def _get_query_service():
+    global _query_service
+    if _query_service is None:
+        from services.query_service import QueryService
+        _query_service = QueryService()
+    return _query_service
+
+
+def _get_ingest_service():
+    global _ingest_service
+    if _ingest_service is None:
+        from services.ingest_service import IngestService
+        _ingest_service = IngestService()
+    return _ingest_service
+
+
+def _get_wiki_engine():
+    global _wiki_engine
+    if _wiki_engine is None:
+        from core.wiki_engine import WikiEngine
+        _wiki_engine = WikiEngine.get_instance()
+    return _wiki_engine
+
+
+# ===== 管理员仪表盘 =====
+
+@router.get("/admin/dashboard")
+def admin_dashboard():
+    """管理员仪表盘：Wiki + RAG + 缓存 + 最近操作 一站式视图"""
+    wiki_engine = _get_wiki_engine()
+    query_service = _get_query_service()
+    
+    # Wiki 统计
+    wiki_stats = {
+        "total_pages": wiki_engine.page_count(),
+        "orphan_pages": 0,
+        "stale_pages": 0,
+        "last_ingest": None,
+    }
+    # RAG 统计
+    rag_stats = {
+        "total_documents": query_service.rag.collection_count(),
+        "last_indexed": None,
+    }
+    # 缓存统计
+    cache_stats = query_service.get_cache_stats()
+    # 最近操作
+    try:
+        log_path = wiki_engine.paths["log"]
+        if log_path.exists():
+            log_lines = log_path.read_text(encoding="utf-8").strip().split("\n")
+            recent = [l for l in log_lines[-10:] if l.startswith("## [")]
+        else:
+            recent = []
+    except Exception:
+        recent = []
+    # Wiki 健康扫描
+    try:
+        lint_issues = wiki_engine.lint()
+        wiki_stats["orphan_pages"] = sum(1 for i in lint_issues if i["type"] == "orphan")
+        wiki_stats["stale_pages"] = sum(1 for i in lint_issues if i["type"] in ("stale", "deprecated_stale", "expired"))
+    except Exception:
+        pass
+    # 最近 Ingest 时间
+    for line in reversed(recent):
+        if "ingest" in line:
+            wiki_stats["last_ingest"] = line.split("]")[0].lstrip("## [")
+            break
+    for line in reversed(recent):
+        if "index" in line.lower() or "ingest" in line:
+            rag_stats["last_indexed"] = line.split("]")[0].lstrip("## [")
+            break
+    return {
+        "wiki": wiki_stats,
+        "rag": rag_stats,
+        "cache": cache_stats,
+        "recent_operations": [l.lstrip("## ").rstrip() for l in recent[-5:]],
+    }
+
+
+# ===== 健康检查 =====
+
+@router.get("/health", response_model=HealthResponse)
+def health():
+    """轻量健康检查：不触发重依赖初始化，避免 OOM"""
+    # 只读配置，不初始化 LLM/WikiEngine/RAGEngine
+    from core.config import settings
+    return HealthResponse(
+        status="ok",
+        llm_provider=settings.llm_provider,
+        llm_model=getattr(settings, f"{settings.llm_provider}_model", "unknown"),
+        wiki_pages=-1,   # 需要初始化 WikiEngine 才能获取，health 不触发
+        vector_count=-1, # 需要初始化 RAGEngine 才能获取，health 不触发
+        uptime_seconds=round(time.time() - START_TIME, 1),
+    )
+
+@router.get("/health/full", response_model=HealthResponse)
+def health_full():
+    """完整健康检查：触发所有组件初始化（内存敏感环境慎用）"""
+    from core.llm_provider import get_llm
+    wiki_engine = _get_wiki_engine()
+    query_service = _get_query_service()
+    llm = get_llm()
+    return HealthResponse(
+        status="ok",
+        llm_provider=llm.model_name,
+        llm_model=llm.model_name,
+        wiki_pages=wiki_engine.page_count(),
+        vector_count=query_service.rag.collection_count(),
+        uptime_seconds=round(time.time() - START_TIME, 1),
+    )
+
+
+# ===== 文档摄入 =====
+
+@router.post("/ingest", response_model=IngestResponse)
+async def ingest(file: UploadFile = File(...)):
+    """上传文档，触发 Wiki Ingest + RAG 索引"""
+    ingest_service = _get_ingest_service()
+    try:
+        content = await file.read()
+        result = ingest_service.ingest_file(content, file.filename)
+
+        return IngestResponse(
+            status=result["status"],
+            wiki_pages=result.get("wiki_pages", []),
+            modified_pages=result.get("modified_pages", []),
+            log_entry=f"[{result['status']}] 摄入 {file.filename}",
+            error=result.get("wiki_error") or result.get("rag_error"),
+        )
+    except Exception as e:
+        return IngestResponse(
+            status="failed",
+            error=str(e),
+        )
+
+
+# ===== 知识问答 =====
+
+@router.post("/query", response_model=QueryResponse)
+def query(req: QueryRequest):
+    """知识问答：Wiki 优先 -> RAG 兜底 + ReAct Agent 自主决策"""
+    query_service = _get_query_service()
+    mode = req.mode if hasattr(req, "mode") else "pipeline"
+    if req.stream:
+        raise HTTPException(400, "流式输出请使用 /api/query/stream")
+
+    result = query_service.query_with_mode(req.question, mode, req.top_k)
+
+    source_info = []
+    for s in result.get("sources", []):
+        source_info.append(SourceInfo(
+            file=s.get("file", "unknown"),
+            page=s.get("page"),
+            chunk_id=s.get("chunk_id"),
+        ))
+
+    return QueryResponse(
+        answer=result["answer"],
+        source=result["source"],
+        source_pages=result.get("source_pages", []),
+        sources=source_info,
+        confidence=result.get("confidence", "medium"),
+        cached=result.get("cached", False),
+        session_id=req.session_id,
+        parsed_question=result.get("parsed_question") or "",
+        pages_consulted=result.get("pages_consulted") or [],
+    )
+
+
+@router.post("/query/stream")
+def query_stream(req: QueryRequest):
+    """流式知识问答"""
+    query_service = _get_query_service()
+    mode = req.mode if hasattr(req, "mode") else "pipeline"
+    result = query_service.query_with_mode(req.question, mode, req.top_k)
+    answer = result["answer"]
+
+    async def generate():
+        for i in range(0, len(answer), 5):
+            yield answer[i:i+5]
+            import asyncio
+            await asyncio.sleep(0.02)
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+# ===== Wiki 相关 =====
+
+@router.get("/wiki/index", response_model=IndexResponse)
+def wiki_index():
+    """获取 Wiki 目录"""
+    wiki_engine = _get_wiki_engine()
+    index_text = wiki_engine.get_index()
+    entries = []
+    for line in index_text.split("\n"):
+        line = line.strip()
+        if line.startswith("- ["):
+            # 简单解析
+            parts = line.split(" | ")
+            title_part = line[3:].split("](")[0] if "](" in line else line[3:].split("]")[0]
+            entries.append(IndexEntry(
+                title=title_part,
+                file="",
+                summary=title_part[:60],
+                updated="",
+            ))
+
+    return IndexResponse(
+        categories={"全部": entries},
+        total_pages=len(entries),
+    )
+
+
+@router.get("/wiki/page/{title:path}", response_model=WikiPageResponse)
+def wiki_page(title: str):
+    """获取 Wiki 页面内容"""
+    wiki_engine = _get_wiki_engine()
+    content = wiki_engine.read_page(title)
+    if content is None:
+        raise HTTPException(404, f"Wiki 页面不存在: {title}")
+
+    # 提取交叉引用 [[...]]
+    import re
+    cross_refs = re.findall(r"\[\[(.+?)\]\]", content)
+
+    return WikiPageResponse(
+        title=title,
+        content=content,
+        cross_refs=list(set(cross_refs)),
+    )
+
+
+# ===== Lint 健康检查 =====
+
+@router.post("/wiki/lint", response_model=LintResponse)
+def wiki_lint(req: LintRequest = LintRequest()):
+    """触发 Wiki 健康检查"""
+    wiki_engine = _get_wiki_engine()
+    issues_raw = wiki_engine.lint()
+
+    issues = []
+    for raw in issues_raw:
+        issues.append(LintIssue(
+            type=raw["type"],
+            pages=raw["pages"],
+            description=raw["description"],
+            severity=raw.get("severity", "warning"),
+        ))
+
+    return LintResponse(
+        status="completed",
+        issues=issues,
+        scanned_pages=wiki_engine.page_count(),
+    )
+
+
+================================================================================
+ 文件: backend\core\config.py  (3.2KB)
+================================================================================
+
+from pydantic_settings import BaseSettings
+from typing import Optional, Literal
+from pathlib import Path
+
+class Settings(BaseSettings):
+    llm_provider: Literal["ollama", "openai", "zhipu"] = "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3"
+    openai_api_key: Optional[str] = None
+    openai_model: str = "gpt-4o"
+    openai_base_url: str = "https://api.openai.com/v1"
+    zhipu_api_key: Optional[str] = None
+    zhipu_model: str = "glm-4"
+
+    # ===== Embedding 閰嶇疆 =====
+    # local: 鏈湴 SentenceTransformer锛堥渶 ~500MB 鍐呭瓨鍔犺浇 bge-small-zh锛?
+    # zhipu: 鏅鸿氨 Embedding API锛堟帹鑽愶紝闆跺唴瀛橈紝楼0.5/鐧句竾token锛?
+    # openai: OpenAI Embedding API锛堥浂鍐呭瓨锛?0.02/鐧句竾token锛?
+    embedding_provider: Literal["local", "zhipu", "openai"] = "local"
+    embedding_model: str = "BAAI/bge-small-zh"  # local 妯″紡涓嬬殑妯″瀷鍚?
+    embedding_device: str = "cpu"                # local 妯″紡涓嬬殑璁惧
+    zhipu_embedding_model: str = "embedding-3"   # 鏅鸿氨 Embedding 妯″瀷鍚?
+    openai_embedding_model: str = "text-embedding-3-small"  # OpenAI Embedding 妯″瀷鍚?
+
+    # ===== 鍚戦噺搴撻厤缃?=====
+    chroma_persist_dir: str = "./chroma_db"
+    chroma_collection_name: str = "enterprise_knowledge"
+    chroma_parent_collection_name: str = "enterprise_knowledge_parents"
+
+    # ===== Wiki 鏁版嵁璺緞 =====
+    wiki_data_dir: str = "../wiki-data"
+    wiki_raw_dir: str = "../wiki-data/raw"
+    wiki_pages_dir: str = "../wiki-data/wiki"
+
+    # ===== 鍒囩墖閰嶇疆 =====
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+    chunk_strategy: dict = {}
+    retrieval_top_k: int = 10
+    parent_child_enabled: bool = True
+    parent_chunk_size: int = 750   # Parent 澶у垏鐗囷紙涓婁笅鏂囧畬鏁达級
+    child_chunk_size: int = 250   # Child 灏忓垏鐗囷紙妫€绱㈢簿搴﹂珮锛?
+    child_chunk_overlap: int = 50
+    parent_chunk_overlap: int = 20
+    rerank_top_k: int = 3
+    similarity_threshold: float = 2.0
+    bm25_weight: float = 0.3
+
+    # ===== Reranker 閰嶇疆 =====
+    reranker_enabled: bool = False  # 鍏抽棴鍙渷 ~1.2GB 鍐呭瓨锛孊M25+鍚戦噺娣峰悎妫€绱㈠凡澶熺敤
+    reranker_model_path: str = "./.models/BAAI/bge-reranker-base"
+
+    # ===== Agent 閰嶇疆 =====
+    agent_max_iterations: int = 5
+    agent_min_self_score: int = 7
+    max_history_rounds: int = 10
+    summary_enabled: bool = True
+    query_cache_ttl_seconds: int = 3600
+    score_cache_ttl_seconds: int = 86400
+    llm_max_retries: int = 3
+    llm_retry_delay_base: float = 1.0
+
+    # ===== 鏈嶅姟閰嶇疆 =====
+    host: str = "0.0.0.0"
+    port: int = 8000
+    debug: bool = False
+    log_dir: str = "./logs"
+    log_level: str = "INFO"
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore"
+    }
+
+    def get_wiki_paths(self):
+        return {
+            "data": Path(self.wiki_data_dir),
+            "raw": Path(self.wiki_raw_dir),
+            "pages": Path(self.wiki_pages_dir),
+            "index": Path(self.wiki_pages_dir) / "index.md",
+            "log": Path(self.wiki_pages_dir) / "log.md",
+        }
+
+settings = Settings()
+
+
+================================================================================
+ 文件: backend\core\rag_engine.py  (29.3KB)
+================================================================================
+
+"""RAG 寮曟搸 - 鏂囨。鍔犺浇銆佸垏鐗囥€佸悜閲忓寲銆佹绱?""
+import hashlib
+import logging
+from collections import defaultdict
+from pathlib import Path
+from typing import Optional, Union
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+
+from core.config import settings
+from core.llm_provider import get_llm
+from core.retrieval import Reranker
+
+logger = logging.getLogger(__name__)
+
+
+# ==================== Embedding 鎶借薄灞?====================
+
+class BaseEmbedding:
+    """Embedding 鎶借薄鍩虹被锛屽吋瀹?SentenceTransformer 鐨?encode / get_sentence_embedding_dimension 鎺ュ彛"""
+
+    def encode(self, texts: Union[str, list[str]], show_progress_bar: bool = False, **kwargs) -> list[list[float]]:
+        raise NotImplementedError
+
+    def get_sentence_embedding_dimension(self) -> int:
+        raise NotImplementedError
+
+
+class LocalEmbedding(BaseEmbedding):
+    """鏈湴 SentenceTransformer Embedding锛堝師鏂规锛岄渶 ~500MB 鍐呭瓨锛?""
+
+    def __init__(self, model_name: str, device: str = "cpu"):
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer(model_name, device=device)
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        result = self._model.encode(texts, show_progress_bar=show_progress_bar, **kwargs)
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._model.get_sentence_embedding_dimension()
+
+
+class ZhipuAPIEmbedding(BaseEmbedding):
+    """鏅鸿氨 Embedding API锛堥浂鍐呭瓨锛屾帹鑽愶級"""
+
+    # 鏅鸿氨 embedding-3 鍥哄畾 2048 缁?
+    MODEL_DIMS = {
+        "embedding-3": 2048,
+        "embedding-2": 1024,
+    }
+
+    def __init__(self, model: str = "embedding-3", api_key: str = None, batch_size: int = 16):
+        from openai import OpenAI
+        self._model = model
+        self._dimension = self.MODEL_DIMS.get(model, 2048)
+        self._batch_size = batch_size
+        api_key = api_key or settings.zhipu_api_key
+        if not api_key:
+            raise ValueError("鏅鸿氨 Embedding 闇€瑕?ZHIPU_API_KEY锛岃鍦?.env 涓厤缃?)
+        self._client = OpenAI(
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            api_key=api_key,
+        )
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        import numpy as np
+        was_single = isinstance(texts, str)
+        if was_single:
+            texts = [texts]
+        all_embeddings = []
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"鏅鸿氨 Embedding API 璋冪敤澶辫触 (batch {i // self._batch_size}): {e}")
+                # 闄嶇骇锛氳繑鍥為浂鍚戦噺
+                all_embeddings.extend([[0.0] * self._dimension] * len(batch))
+        result = np.array(all_embeddings)
+        # 鍗曟潯鏌ヨ鏃?squeeze 鎺?batch 缁村害锛屼笌 sentence_transformers 琛屼负涓€鑷?
+        if was_single:
+            return result[0]
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+
+class OpenAIAPIEmbedding(BaseEmbedding):
+    """OpenAI Embedding API锛堥浂鍐呭瓨锛?""
+
+    # OpenAI 妯″瀷缁村害鏄犲皠
+    MODEL_DIMS = {
+        "text-embedding-3-small": 1536,
+        "text-embedding-3-large": 3072,
+        "text-embedding-ada-002": 1536,
+    }
+
+    def __init__(self, model: str = "text-embedding-3-small", api_key: str = None,
+                 base_url: str = None, batch_size: int = 16):
+        from openai import OpenAI
+        self._model = model
+        self._dimension = self.MODEL_DIMS.get(model, 1536)
+        self._batch_size = batch_size
+        api_key = api_key or settings.openai_api_key
+        base_url = base_url or settings.openai_base_url
+        if not api_key:
+            raise ValueError("OpenAI Embedding 闇€瑕?OPENAI_API_KEY锛岃鍦?.env 涓厤缃?)
+        self._client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        import numpy as np
+        was_single = isinstance(texts, str)
+        if was_single:
+            texts = [texts]
+        all_embeddings = []
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"OpenAI Embedding API 璋冪敤澶辫触 (batch {i // self._batch_size}): {e}")
+                all_embeddings.extend([[0.0] * self._dimension] * len(batch))
+        result = np.array(all_embeddings)
+        # 鍗曟潯鏌ヨ鏃?squeeze 鎺?batch 缁村害锛屼笌 sentence_transformers 琛屼负涓€鑷?
+        if was_single:
+            return result[0]
+        return result
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+
+def create_embedding() -> BaseEmbedding:
+    """宸ュ巶鍑芥暟锛氭牴鎹?embedding_provider 閰嶇疆鍒涘缓 Embedding 瀹炰緥"""
+    provider = settings.embedding_provider
+    logger.info(f"鍒濆鍖?Embedding: provider={provider}")
+
+    if provider == "zhipu":
+        return ZhipuAPIEmbedding(
+            model=settings.zhipu_embedding_model,
+        )
+    elif provider == "openai":
+        return OpenAIAPIEmbedding(
+            model=settings.openai_embedding_model,
+        )
+    else:  # local
+        return LocalEmbedding(
+            model_name=settings.embedding_model,
+            device=settings.embedding_device,
+        )
+
+
+# ==================== RAG 寮曟搸 ====================
+
+class RAGEngine:
+    """RAG 寮曟搸 - 鏂囨。妫€绱笌闂瓟"""
+
+    _instance: Optional["RAGEngine"] = None
+
+    @classmethod
+    def get_instance(cls) -> "RAGEngine":
+        """鑾峰彇鍗曚緥锛堥伩鍏嶅娆″姞杞?Embedding 妯″瀷鍗犳弧鍐呭瓨锛?""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.llm = get_llm()
+        self.embeddings = create_embedding()
+        self.chroma_client = chromadb.PersistentClient(
+            path=settings.chroma_persist_dir,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+        self.collection = self.chroma_client.get_or_create_collection(
+            name=settings.chroma_collection_name,
+        )
+        # Parent-Child: 鐖剁骇 chunks 鍗曠嫭瀛樹竴涓?collection锛堜粎 ID 鏌ヨ锛屼笉鍙備笌鍚戦噺妫€绱級
+        self.parent_collection = self.chroma_client.get_or_create_collection(
+            name=settings.chroma_parent_collection_name,
+        )
+        self._loader_map = {
+            ".pdf": self._load_pdf,
+            ".txt": self._load_text,
+            ".md": self._load_markdown,
+            ".docx": self._load_docx,
+            ".xlsx": self._load_xlsx,
+            ".xls": self._load_xls,
+            ".csv": self._load_text,  # CSV 鎸夌函鏂囨湰澶勭悊
+        }
+        # BM25 绱㈠紩锛堟噿鍔犺浇锛?
+        self._bm25 = None
+        self._bm25_id_map = {}
+        # Reranker锛堥噸鎺掑簭锛夆€?鎸夐厤缃喅瀹氭槸鍚﹀姞杞?
+        if settings.reranker_enabled:
+            self.reranker = Reranker(model_name_or_path=settings.reranker_model_path)
+        else:
+            self.reranker = None
+            logger.info("Reranker 宸茬鐢紙reranker_enabled=False锛夛紝鑺傜渷 ~1.2GB 鍐呭瓨")
+
+    # ========== 鏂囨。鍔犺浇 ==========
+
+    def load_file(self, file_path: Path) -> list[str]:
+        """鍔犺浇鍗曚釜鏂囦欢锛岃繑鍥炴枃鏈钀藉垪琛?""
+        ext = file_path.suffix.lower()
+        loader = self._loader_map.get(ext)
+        if loader is None:
+            raise ValueError(f"涓嶆敮鎸佺殑鏂囦欢鏍煎紡: {ext}锛堟敮鎸? {list(self._loader_map.keys())}")
+        return loader(file_path)
+
+    def _load_pdf(self, path: Path) -> list[str]:
+        try:
+            import fitz  # pymupdf
+            doc = fitz.open(str(path))
+            texts = []
+            for page in doc:
+                t = page.get_text()
+                if t.strip():
+                    texts.append(t)
+            return texts
+        except ImportError:
+            raise ImportError("璇峰畨瑁?pymupdf: pip install pymupdf")
+
+    def _load_text(self, path: Path) -> list[str]:
+        text = path.read_text(encoding="utf-8")
+        return [text] if text.strip() else []
+
+    def _load_markdown(self, path: Path) -> list[str]:
+        text = path.read_text(encoding="utf-8")
+        return [text] if text.strip() else []
+
+    def _load_docx(self, path: Path) -> list[str]:
+        try:
+            from docx import Document
+            doc = Document(str(path))
+            return [p.text for p in doc.paragraphs if p.text.strip()]
+        except ImportError:
+            raise ImportError("璇峰畨瑁?python-docx: pip install python-docx")
+
+    def _load_xlsx(self, path: Path) -> list[str]:
+        """鐢?openpyxl 瑙ｆ瀽 .xlsx锛屾瘡涓?sheet 杈撳嚭涓烘枃瀛楄〃"""
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(path, data_only=True)
+            texts = []
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = []
+                for row in ws.iter_rows(min_row=1, values_only=True):
+                    cleaned = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                    if cleaned:
+                        rows.append(" | ".join(cleaned))
+                if rows:
+                    texts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+            return texts
+        except ImportError:
+            raise ImportError("璇峰畨瑁?openpyxl: pip install openpyxl")
+
+    def _load_xls(self, path: Path) -> list[str]:
+        """鐢?xlrd 瑙ｆ瀽鑰佺増 .xls锛屾瘡涓?sheet 杈撳嚭涓烘枃瀛楄〃"""
+        try:
+            import xlrd
+            wb = xlrd.open_workbook(str(path))
+            texts = []
+            for sheet_name in wb.sheet_names():
+                ws = wb.sheet_by_name(sheet_name)
+                rows = []
+                for row_idx in range(ws.nrows):
+                    cleaned = [str(ws.cell_value(row_idx, c)).strip()
+                               for c in range(ws.ncols)
+                               if str(ws.cell_value(row_idx, c)).strip()]
+                    if cleaned:
+                        rows.append(" | ".join(cleaned))
+                if rows:
+                    texts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+            return texts
+        except ImportError:
+            raise ImportError("璇峰畨瑁?xlrd: pip install xlrd")
+
+    # ========== 鍒囩墖 & 鍚戦噺鍖?==========
+
+    def chunk_texts(self, texts: list[str], ext: str = "") -> list[str]:
+        strategy = settings.chunk_strategy.get(ext.lstrip("."), {})
+        cs = strategy.get("chunk_size", settings.chunk_size)
+        co = strategy.get("chunk_overlap", settings.chunk_overlap)
+        seps = strategy.get("separators", ["\n\n", "\n", ".", " ", ""])
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=cs,
+            chunk_overlap=co,
+            separators=seps,
+        )
+        full_text = "\n\n".join(texts)
+        return splitter.split_text(full_text)
+
+    def chunk_texts_parent_child(self, texts: list[str]) -> tuple[list[str], list[str], list[int]]:
+        """
+        Parent-Child 鍙屽眰绾у垏鐗囥€?
+        - child: 250 瀛楀皬绮掑害锛屽瓨 Chroma 鍋氬悜閲忔绱紙绮惧害楂橈級
+        - parent: 750 瀛楀ぇ绮掑害锛宑hild 鈫?parent 鏄犲皠鍚庨€佺粰 LLM锛堜笂涓嬫枃瀹屾暣锛?
+        杩斿洖: (child_chunks, parent_chunks, child_to_parent_map)
+               child_to_parent_map[i] = parent 鐨勪笅鏍?
+        """
+        full_text = "\n\n".join(texts)
+
+        # 1. Parent 灞傦細750 瀛楀ぇ鍒囩墖锛堟棤閲嶅彔锛屼綔涓轰笂涓嬫枃鍗曞厓锛?
+        parent_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=settings.parent_chunk_size,
+            chunk_overlap=settings.parent_chunk_overlap,
+            separators=["\n\n", "\n", ".", " ", ""],
+        )
+        parent_chunks = parent_splitter.split_text(full_text)
+        if not parent_chunks:
+            return [], [], []
+
+        # 2. Child 灞傦細姣忎釜 parent 鍐呴儴鍒?250 瀛楀皬瀛愬潡
+        child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=settings.child_chunk_size,
+            chunk_overlap=settings.child_chunk_overlap,
+            separators=["\n\n", "\n", ".", " ", ""],
+        )
+
+        child_chunks = []
+        child_to_parent = []
+        for p_idx, parent in enumerate(parent_chunks):
+            children = child_splitter.split_text(parent)
+            child_chunks.extend(children)
+            child_to_parent.extend([p_idx] * len(children))
+
+        return child_chunks, parent_chunks, child_to_parent
+
+    def index_document(self, file_path: Path) -> int:
+        """绱㈠紩涓€涓枃妗ｏ細娓呯悊鏃х増鏈?鈫?鍔犺浇 鈫?Parent-Child 鍒囩墖 鈫?鍚戦噺鍖?鈫?瀛樺叆 Chroma"""
+        # P1.2: 澧為噺绱㈠紩 鈥?鍏堟竻鐞嗗悓涓€鏂囦欢鐨勬棫 chunks锛岄槻姝㈤噸澶嶅爢绉?
+        self._remove_document_chunks(file_path)
+
+        try:
+            texts = self.load_file(file_path)
+        except Exception as e:
+            raise RuntimeError(f"鏂囨。鍔犺浇澶辫触 [{file_path.name}]: {e}")
+
+        if not texts:
+            raise ValueError(f"鏂囨。鍐呭涓虹┖: {file_path.name}")
+
+        # ===== Parent-Child 鍙屽眰绾у垏鐗?=====
+        child_chunks, parent_chunks, child_to_parent = self.chunk_texts_parent_child(texts)
+
+        if not child_chunks:
+            raise ValueError(f"鍒囩墖鍚庢棤鍐呭: {file_path.name}")
+
+        # ---- 1. 瀛樺叆 Parent collection锛堜粎 ID 鏌ヨ鐢紝涓嶅仛鍚戦噺妫€绱級 ----
+        parent_ids = [f"p_{file_path.stem}_{i}" for i in range(len(parent_chunks))]
+        parent_metadatas = [
+            {"source": file_path.name, "parent_index": i, "path": str(file_path)}
+            for i in range(len(parent_chunks))
+        ]
+        # Parent 涓嶉渶瑕佹湁鏁?embedding锛屽～闆跺悜閲忓嵆鍙紙姘歌繙涓嶄細琚悜閲忔悳绱級
+        dim = self.embeddings.get_sentence_embedding_dimension()
+        parent_embeddings = [[0.0] * dim for _ in parent_chunks]
+        self.parent_collection.add(
+            ids=parent_ids,
+            embeddings=parent_embeddings,
+            documents=parent_chunks,
+            metadatas=parent_metadatas,
+        )
+
+        # ---- 2. 瀛樺叆 Child collection锛堝弬涓庡悜閲?+ BM25 娣峰悎妫€绱級 ----
+        child_ids = []
+        for i, chunk in enumerate(child_chunks):
+            chunk_hash = hashlib.md5(chunk.encode()).hexdigest()[:12]
+            child_ids.append(f"{file_path.stem}_{i}_{chunk_hash}")
+
+        embeddings = self.embeddings.encode(child_chunks, show_progress_bar=False).tolist()
+        metadatas = [
+            {
+                "source": file_path.name,
+                "chunk_index": i,
+                "path": str(file_path),
+                "parent_id": f"p_{file_path.stem}_{child_to_parent[i]}",
+            }
+            for i in range(len(child_chunks))
+        ]
+
+        self.collection.add(
+            ids=child_ids,
+            embeddings=embeddings,
+            documents=child_chunks,
+            metadatas=metadatas,
+        )
+
+        # 閲嶅缓 BM25 绱㈠紩锛堟爣璁颁负鑴忥紝涓嬫妫€绱㈡椂鎳掑姞杞斤級
+        self._bm25 = None
+
+        return len(child_chunks)
+
+    def _remove_document_chunks(self, file_path: Path) -> int:
+        """瀹夊叏鍒犻櫎鍚屼竴鏂囦欢鐨勬棫 chunks锛堟寜瀹屾暣璺緞绮剧‘鍖归厤锛屼笉浼氳鍒犲叾浠栨枃妗ｏ級"""
+        deleted = 0
+        try:
+            existing = self.collection.get(where={"path": str(file_path)})
+            old_ids = existing.get("ids", [])
+            if old_ids:
+                self.collection.delete(ids=old_ids)
+                deleted = len(old_ids)
+        except Exception:
+            # Chroma 棣栨鍒涘缓 collection 鏃?where 鏌ヨ鍙兘涓嶇ǔ瀹氾紝闄嶇骇璺宠繃
+            pass
+
+        # Parent-Child: 鍚屾娓呯悊 parent collection
+        try:
+            existing_parents = self.parent_collection.get(where={"path": str(file_path)})
+            old_parent_ids = existing_parents.get("ids", [])
+            if old_parent_ids:
+                self.parent_collection.delete(ids=old_parent_ids)
+        except Exception:
+            pass
+
+        return deleted
+
+    # ========== 妫€绱?==========
+
+    def retrieve(self, query: str, top_k: int = None) -> list[dict]:
+        """榛樿妫€绱細鍚戦噺 + BM25 娣峰悎妫€绱?""
+        return self.retrieve_with_bm25(query, top_k)
+
+    def retrieve_vector_only(self, query: str, top_k: int = None) -> list[dict]:
+        """绾悜閲忔绱紙鐢ㄤ簬瀵规瘮/璋冭瘯锛?""
+        if top_k is None:
+            top_k = settings.retrieval_top_k
+
+        query_embedding = self.embeddings.encode(query, show_progress_bar=False).tolist()
+
+        # P1.1: 鍙?top_k * 3 涓?chunk锛屽幓閲嶅悗鍐嶆埅鏂紝纭繚 top_k 涓潵鑷笉鍚屾枃妗?
+        fetch_k = top_k * 3
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=fetch_k,
+        )
+
+        documents = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                score = results["distances"][0][i] if results.get("distances") else 0
+                # 鐩镐技搴﹂槇鍊艰繃婊?
+                # ChromaDB 榛樿鐢?L2 璺濈锛氳秺灏忚秺鐩镐技锛屼綆浜庨槇鍊肩殑鎵嶄繚鐣欙紙璺濈杩囧ぇ鐨勪笉鐩镐技锛?
+                if score > settings.similarity_threshold:
+                    continue
+                documents.append({
+                    "id": doc_id,
+                    "content": results["documents"][0][i] if results.get("documents") else "",
+                    "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                    "score": score,
+                })
+
+        # 鎸?source 鍘婚噸锛氬悓涓€鏂囨。鍙繚鐣欐渶楂樺垎鐨?chunk
+        docs = self._dedup_by_source(documents, top_k)
+
+        # Parent-Child 鏄犲皠
+        if settings.parent_child_enabled:
+            docs = self._map_children_to_parents(docs)
+
+        # Reranker 閲嶆帓搴忥紙浠呭湪鍚敤鏃讹級
+        if self.reranker and self.reranker.available and len(docs) > 1:
+            docs = self.reranker.rerank(query, docs, top_k=settings.rerank_top_k)
+
+        return docs
+
+    def _dedup_by_source(self, docs: list[dict], top_k: int) -> list[dict]:
+        """鎸?source 鍒嗙粍鍘婚噸锛屾瘡缁勫彧淇濈暀璺濈鏈€杩戠殑 chunk锛岃繑鍥?top_k 涓笉鍚屾潵婧?""
+        best = {}
+        for d in docs:
+            src = d.get("metadata", {}).get("source", "__UNKNOWN__")
+            # ChromaDB 璺濈锛氳秺灏忚秺鐩稿叧锛屾墍浠ヤ繚鐣欏垎鏁版渶浣庣殑 chunk
+            if src not in best or d["score"] < best[src]["score"]:
+                best[src] = d
+        # 璺濈鍗囧簭锛氭渶杩戯紙鏈€鐩稿叧锛夌殑鎺掓渶鍓?
+        return sorted(best.values(), key=lambda x: x["score"])[:top_k]
+
+    # ========== BM25 娣峰悎妫€绱?==========
+
+    def _tokenize(self, text: str) -> list[str]:
+        """瀵逛腑鏂囨枃鏈仛 jieba 鍒嗚瘝锛岃嫳鏂?鏁板瓧淇濈暀鍘熻瘝"""
+        import jieba
+        import re
+        # 鍏堢敤姝ｅ垯鎻愬彇涓枃娈佃惤鍜岃嫳鏁版钀?
+        tokens = []
+        for segment in re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', text):
+            if re.match(r'[\u4e00-\u9fff]+', segment):
+                tokens.extend(jieba.lcut(segment))  # jieba 鍒嗚瘝
+            else:
+                tokens.append(segment.lower())      # 鑻辨暟杞皬鍐?
+        return tokens
+
+    def _rebuild_bm25_index(self):
+        """浠?ChromaDB 璇诲彇鎵€鏈夋枃妗ｏ紝閲嶅缓 BM25 绱㈠紩"""
+        from rank_bm25 import BM25Okapi
+        all_data = self.collection.get(include=["documents"])
+        if not all_data or not all_data.get("documents"):
+            self._bm25 = None
+            self._bm25_id_map = {}
+            return
+        tokenized_corpus = []
+        self._bm25_id_map = {}
+        for i, doc_text in enumerate(all_data["documents"]):
+            tokenized_corpus.append(self._tokenize(doc_text))
+            self._bm25_id_map[all_data["ids"][i]] = i  # doc_id 鈫?corpus index
+        self._bm25 = BM25Okapi(tokenized_corpus)
+
+    def retrieve_with_bm25(self, query: str, top_k: int = None) -> list[dict]:
+        """娣峰悎妫€绱細鍚戦噺 + BM25 鍔犳潈铻嶅悎"""
+        if top_k is None:
+            top_k = settings.retrieval_top_k
+
+        # ---- 1. 鍚戦噺妫€绱紙鍘熸牱鍙栵紝涓嶅仛闃堝€艰繃婊わ紝鐣欑粰铻嶅悎鍚庣粺涓€鍘婚噸锛?----
+        query_embedding = self.embeddings.encode(query, show_progress_bar=False).tolist()
+        fetch_k = top_k * 5
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=fetch_k,
+        )
+
+        vector_docs = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                score = results["distances"][0][i] if results.get("distances") else 0
+                vector_docs.append({
+                    "id": doc_id,
+                    "content": results["documents"][0][i] if results.get("documents") else "",
+                    "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                    "vector_l2": score,
+                })
+
+        if not vector_docs:
+            return []
+
+        # ---- 2. BM25 妫€绱?----
+        if self._bm25 is None:
+            self._rebuild_bm25_index()
+
+        query_tokens = self._tokenize(query)
+        bm25_scores_all = self._bm25.get_scores(query_tokens) if self._bm25 else []
+
+        # 涓烘瘡涓?vector_doc 鍖归厤 BM25 鍒?
+        for d in vector_docs:
+            idx = self._bm25_id_map.get(d["id"])
+            d["bm25_raw"] = bm25_scores_all[idx] if idx is not None and len(bm25_scores_all) > 0 else 0.0
+
+        # ---- 3. 褰掍竴鍖?----
+        # 鍚戦噺 L2 璺濈 鈫?鐩镐技搴?(0~1)锛歴im = 1 / (1 + l2)
+        # BM25 raw 鈫?[0,1]锛歮in-max 褰掍竴鍖?
+        l2_vals = [d["vector_l2"] for d in vector_docs]
+        bm25_vals = [d["bm25_raw"] for d in vector_docs]
+        max_l2 = max(l2_vals) if l2_vals else 1.0
+        max_bm25 = max(bm25_vals) if bm25_vals else 1.0
+
+        for d in vector_docs:
+            d["vector_sim"] = 1.0 / (1.0 + d["vector_l2"])
+            d["bm25_norm"] = d["bm25_raw"] / max_bm25 if max_bm25 > 0 else 0.0
+
+        # ---- 4. 鍔犳潈铻嶅悎 ----
+        bw = settings.bm25_weight
+        for d in vector_docs:
+            d["hybrid_score"] = (1 - bw) * d["vector_sim"] + bw * d["bm25_norm"]
+
+        # ---- 5. 鎸?hybrid_score 闄嶅簭鎺掑垪 + 鏉ユ簮鍘婚噸 ----
+        vector_docs.sort(key=lambda x: x["hybrid_score"], reverse=True)
+
+        # 鍘婚噸锛氬悓 source 鏈€澶氫繚鐣?hybrid_score 鏈€楂樼殑 2 涓?chunk
+        # 锛堥伩鍏嶆毚鍔?1chunk/鏂囦欢 瀵艰嚧鍚屼竴鏂囦欢鐨勪綆棰戝瓙璇濋琚涪寮冿級
+        buckets = defaultdict(list)
+        for d in vector_docs:
+            src = d.get("metadata", {}).get("source", "__UNKNOWN__")
+            buckets[src].append(d)
+        best = []
+        for src, items in buckets.items():
+            items.sort(key=lambda x: x["hybrid_score"], reverse=True)
+            best.extend(items[:2])
+
+        merged = sorted(best, key=lambda x: x["hybrid_score"], reverse=True)[:top_k]
+
+        # 鎶?hybrid_score 鏄犲皠鍥炵粺涓€鐨?score 瀛楁
+        for d in merged:
+            d["score"] = d["hybrid_score"]
+
+        # ===== Parent-Child 鏄犲皠锛歝hild 鈫?parent锛堝幓閲嶅悎骞讹級 =====
+        if settings.parent_child_enabled:
+            merged = self._map_children_to_parents(merged)
+
+        # ===== Reranker 閲嶆帓搴忥紙浠呭湪鍚敤鏃讹級 =====
+        if self.reranker and self.reranker.available and len(merged) > 1:
+            merged = self.reranker.rerank(query, merged, top_k=settings.rerank_top_k)
+
+        return merged
+
+    def _map_children_to_parents(self, child_docs: list[dict]) -> list[dict]:
+        """灏嗘绱㈠埌鐨?child chunks 鏄犲皠鍒?parent chunks锛屽幓閲嶅悎骞跺悗杩斿洖"""
+        parent_ids_seen = set()
+        parent_docs = []
+        for child in child_docs:
+            pid = child.get("metadata", {}).get("parent_id")
+            if not pid or pid in parent_ids_seen:
+                continue
+            parent_ids_seen.add(pid)
+
+            try:
+                parent_data = self.parent_collection.get(ids=[pid])
+                if parent_data and parent_data.get("documents"):
+                    parent_docs.append({
+                        "id": pid,
+                        "content": parent_data["documents"][0],
+                        "metadata": parent_data["metadatas"][0] if parent_data.get("metadatas") else {},
+                        "score": child["score"],
+                    })
+            except Exception:
+                continue
+        return parent_docs
+
+    # ========== 闂瓟 ==========
+
+    def answer(self, question: str, context_docs: list[dict]) -> str:
+        """鍩轰簬妫€绱㈢粨鏋滅敓鎴愬洖绛?""
+        if not context_docs:
+            return "鏈壘鍒扮浉鍏虫枃妗ｏ紝鏃犳硶鍥炵瓟姝ら棶棰樸€?
+
+        context_text = "\n\n---\n\n".join([
+            f"[鏉ユ簮: {doc['metadata'].get('source', 'unknown')}]\n{doc['content']}"
+            for doc in context_docs[:settings.rerank_top_k]
+        ])
+
+        prompt = f"""浣犳槸涓€涓紒涓氱煡璇嗗簱鍔╂墜銆傝鏍规嵁浠ヤ笅妫€绱㈠埌鐨勬枃妗ｅ唴瀹瑰洖绛旂敤鎴烽棶棰樸€?
+
+## 杈撳嚭鏍煎紡瑕佹眰锛堜弗鏍奸伒瀹堬級
+
+鍥炵瓟蹇呴』鏄?**绾?HTML 鐗囨**锛堜笉鍚?html/body/head 鏍囩锛夛紝娓叉煋缇庤锛岀粨鏋勬竻鏅般€?
+
+### HTML 缁撴瀯妯℃澘
+
+```html
+<div class="rag-answer">
+  <div class="rag-section">
+    <span class="rag-label">缁撹</span>
+    <span class="rag-content"><strong>缁撹鍐呭鍔犵矖</strong></span>
+  </div>
+  <div class="rag-section">
+    <span class="rag-label">渚濇嵁</span>
+    <ul class="rag-list">
+      <li><span class="rag-source">鏂囨。鍚嶇О</span>锛氬師鏂囨憳瑕?/li>
+    </ul>
+  </div>
+  <div class="rag-section">
+    <span class="rag-label">琛ュ厖</span>
+    <span class="rag-content">棰濆涓婁笅鏂?/span>
+  </div>
+  <div class="rag-section rag-footer">
+    <span class="rag-label">鏉ユ簮</span>
+    <span class="rag-content">鏂囦欢1銆佹枃浠?</span>
+  </div>
+</div>
+```
+
+### 瑙勫垯
+1. 鍙緷鎹彁渚涚殑鏂囨。鍐呭鍥炵瓟锛屼笉瑕佺紪閫?
+2. **璇箟鍖归厤**锛氱敤鎴风敤璇嶅彲鑳戒笉鏄枃妗ｄ腑鐨勭簿纭敤璇嶏紙濡?鑰佹澘"鍙兘瀵瑰簲鏂囨。涓殑"钁ｄ簨闀?鍒涘浜?CEO"锛夛紝璇锋牴鎹涔夌悊瑙ｅ尮閰嶏紝涓嶈鍥犱负鐢ㄨ瘝涓嶅悓灏卞垽瀹?鏈壘鍒?
+3. 濡傛灉纭疄鎵句笉鍒扮浉鍏充俊鎭紝杩斿洖锛?div class="rag-answer">鏈湪鏂囨。涓壘鍒扮浉鍏充俊鎭€?/div>锛堜粎鍦ㄦ绱㈠埌鐨勬墍鏈夋枃妗ｇ‘瀹為兘涓嶅寘鍚换浣曠浉鍏冲唴瀹规椂鎵嶈繑鍥烇級
+4. 鍏抽敭鏁板瓧/鍚嶇О鐢?<strong> 鍔犵矖
+5. 姣忎釜渚濇嵁椤规爣娉ㄦ潵婧愭枃妗ｅ悕绉?
+6. <span class="rag-source"> 鍖呰９鏂囨。鍚嶏紝鍐掑彿鍚庤窡鍘熸枃鎽樿
+7. 涓嶈杈撳嚭 ```html 浠ｇ爜鍧楀寘瑁癸紝鐩存帴杈撳嚭 HTML 鐗囨
+8. **鏉ユ簮鏉冨▉鎬?*锛氬綋澶氫釜鏉ユ簮淇℃伅鍐茬獊鏃讹紝鎸変互涓嬩紭鍏堢骇鍙栦俊锛氶厤缃枃浠?鍒跺害鏂囨。 > 瀹樻柟鍏憡/閫氱煡 > 浼氳绾 > 鍏朵粬
+9. **鏁板€艰绠?*锛氭秹鍙婃暟鍊兼瘮杈冩垨璁＄畻鏃讹紝蹇呴』鍒楀嚭璁＄畻杩囩▼鍜岀畻寮忥紝涓嶈蹇冪畻
+
+---
+
+妫€绱㈠埌鐨勬枃妗ｏ細
+{context_text}
+
+鐢ㄦ埛闂锛歿question}
+
+璇锋寜涓婅堪鏍煎紡鐢ㄤ腑鏂囧洖绛旓細
+"""
+        return self.llm.chat([
+            {"role": "system", "content": "浣犳槸浼佷笟鐭ヨ瘑搴撳姪鎵嬶紝鍙緷鎹绱㈠埌鐨勬枃妗ｅ洖绛斻€傛敞鎰忚涔夊尮閰嶏細鐢ㄦ埛鐢ㄨ瘝鍙兘涓嶇瓑浜庢枃妗ｄ腑鐨勭簿纭敤璇嶏紙濡?鑰佹澘'鍙兘瀵瑰簲'钁ｄ簨闀?CEO/鍒涘浜?锛夛紝鍏佽鍚堢悊鎺ㄦ柇銆傚洖绛斿繀椤绘槸绾疕TML鐗囨锛屼笉鍚玥tml/body/head鏍囩锛屼娇鐢╮ag-answer/rag-section/rag-label/rag-content/rag-list/rag-source绛塩lass鍚嶃€傞噸瑕佽鍒欙細鏉ユ簮鍐茬獊鏃堕厤缃枃浠?鍏憡>浼氳绾锛涙暟鍊兼瘮杈冨繀椤诲垪鍑鸿绠楄繃绋嬨€?},
+            {"role": "user", "content": prompt}
+        ], label="answer")
+
+    # ========== 宸ュ叿鏂规硶 ==========
+
+    def collection_count(self) -> int:
+        """鍚戦噺搴撲腑鐨勬枃妗ｆ暟閲?""
+        return self.collection.count()
+
+    def clear_collection(self):
+        """娓呯┖鍚戦噺搴擄紙child + parent锛?""
+        try:
+            self.chroma_client.delete_collection(settings.chroma_collection_name)
+        except Exception:
+            pass
+        try:
+            self.chroma_client.delete_collection(settings.chroma_parent_collection_name)
+        except Exception:
+            pass
+        self.collection = self.chroma_client.get_or_create_collection(
+            name=settings.chroma_collection_name,
+        )
+        self.parent_collection = self.chroma_client.get_or_create_collection(
+            name=settings.chroma_parent_collection_name,
+        )
+
+
+================================================================================
+ 文件: backend\core\retrieval.py  (3.2KB)
+================================================================================
+
+"""妫€绱㈠寮猴細Rerank 閲嶆帓搴?""
+from typing import Optional
+
+from core.config import settings
+
+# NOTE: BM25Retriever 鍜?merge_results 宸插垹闄わ紙姝讳唬鐮侊級銆?
+# BM25 娣峰悎妫€绱㈤€昏緫鍦?rag_engine.py 涓敤 jieba 鍒嗚瘝瀹炵幇锛?
+# 姝ゅ鍙繚鐣?Reranker銆?
+
+
+class Reranker:
+    """Rerank 閲嶆帓搴忓櫒"""
+
+    def __init__(self, model_name_or_path: str = "./.models/BAAI/bge-reranker-v2-m3"):
+        self._reranker = None
+        self._model_path = model_name_or_path
+        # 浠呭湪 reranker_enabled=True 鏃跺垵濮嬪寲妯″瀷
+        if not settings.reranker_enabled:
+            return
+        self._init_model()
+
+    def _init_model(self):
+        """鍒濆鍖?Rerank 妯″瀷锛堟敮鎸?HF 杩滅▼鎴栨湰鍦拌矾寰勶級"""
+        import os
+        from pathlib import Path
+
+        # 鍏堟鏌ユ湰鍦版湁娌℃湁瀹屾暣妯″瀷锛岄伩鍏?FlagReranker 纭繛 HF 鍗′綇
+        model_path = self._model_path
+        found_locally = Path(model_path).exists()
+
+        if not found_locally:
+            # 鍙兘鏄?HF 妯″瀷鍚嶏紝鏌ユ湰鍦扮紦瀛?
+            cache_dir = Path(os.path.expanduser("~")) / ".cache" / "huggingface" / "hub"
+            required_files = ["config.json", "tokenizer_config.json", "tokenizer.json",
+                              "model.safetensors"]
+            for d in cache_dir.rglob("snapshots/*/config.json"):
+                parent = d.parent
+                if all((parent / f).exists() for f in required_files):
+                    model_path = str(parent)
+                    found_locally = True
+                    break
+
+        if not found_locally:
+            # 妯″瀷鏂囦欢涓嶅叏锛岃烦杩囧垵濮嬪寲
+            self._reranker = None
+            return
+
+        os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "5")
+        try:
+            from FlagEmbedding import FlagReranker
+            self._reranker = FlagReranker(
+                model_path,
+                use_fp16=True, device="cpu",
+            )
+        except Exception:
+            self._reranker = None
+
+    @property
+    def available(self) -> bool:
+        return self._reranker is not None
+
+    def rerank(self, query: str, documents: list[dict], top_k: int = 3) -> list[dict]:
+        """
+        瀵规绱㈢粨鏋滈噸鎺掑簭
+        Args:
+            query: 鐢ㄦ埛鏌ヨ
+            documents: 绮楁帓缁撴灉
+            top_k: 杩斿洖 Top-K
+        Returns: 閲嶆柊鎺掑簭鍚庣殑鏂囨。鍒楄〃
+        """
+        if not self.available or len(documents) <= 1:
+            return documents[:top_k]
+
+        # 鏋勯€?(query, doc) 瀵?
+        pairs = [[query, doc["content"][:500]] for doc in documents]
+
+        try:
+            scores = self._reranker.compute_score(pairs, normalize=True)
+            # 鍗曚釜缁撴灉鏃?scores 鏄爣閲?
+            if not isinstance(scores, list):
+                scores = [scores]
+
+            # 闄勪笂鍒嗘暟骞舵帓搴?
+            for i, doc in enumerate(documents):
+                doc["rerank_score"] = float(scores[i]) if i < len(scores) else 0.0
+
+            sorted_docs = sorted(
+                documents, key=lambda x: x.get("rerank_score", 0), reverse=True
+            )
+            return sorted_docs[:top_k]
+
+        except Exception:
+            return documents[:top_k]
+
+
+================================================================================
+ 文件: backend\core\llm_provider.py  (11.6KB)
+================================================================================
+
+"""LLM Provider - 鍙彃鎷旂殑 LLM 璋冪敤灞傦紙鍚噸璇曘€侀檷绾с€佸苟鍙戞帶鍒讹級"""
+import asyncio
+import re
+import time
+import logging
+from abc import ABC, abstractmethod
+from threading import Semaphore
+from typing import Generator
+
+from openai import OpenAI, APIError, APIConnectionError, APITimeoutError, RateLimitError
+
+from core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# 鍏ㄥ眬闄愭祦锛氭渶澶?3 涓?LLM 骞跺彂璇锋眰
+_global_semaphore = Semaphore(3)
+
+# 鍙噸璇曠殑閿欒绫诲瀷锛堢綉缁滅灛鏂€佽秴鏃躲€侀檺娴侊級
+RETRYABLE_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError)
+
+# 闄嶇骇鍥炲
+FALLBACK_MESSAGE = "绯荤粺绻佸繖锛岃绋嶅悗閲嶈瘯銆?
+
+
+class LLMError(Exception):
+    """LLM 璋冪敤寮傚父"""
+    def __init__(self, message: str, retryable: bool = True, original: Exception = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.original = original
+
+
+class LLMProvider(ABC):
+    """LLM 鎶借薄鍩虹被 鈥?鍐呯疆閲嶈瘯銆侀檷绾с€佸苟鍙戞帶鍒?""
+
+    def __init__(self):
+        self._max_retries = getattr(settings, 'llm_max_retries', 3)
+        self._retry_base_delay = getattr(settings, 'llm_retry_delay_base', 1.0)
+        self._retry_backoff = 2.0
+
+    @abstractmethod
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = ""):
+        """瀛愮被瀹炵幇瀹為檯鐨?API 璋冪敤"""
+        ...
+
+    @abstractmethod
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        """瀛愮被瀹炵幇瀹為檯鐨勬祦寮?API 璋冪敤"""
+        ...
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        ...
+
+    def _classify_error(self, error: Exception) -> LLMError:
+        """鍒嗙被閿欒锛氬彲閲嶈瘯 vs 涓嶅彲閲嶈瘯"""
+        if isinstance(error, RETRYABLE_ERRORS):
+            return LLMError(str(error), retryable=True, original=error)
+        if isinstance(error, APIError):
+            # 4xx 閫氬父鏄鎴风闂涓嶅彲閲嶈瘯锛?xx 鍙噸璇?            status = getattr(error, 'status_code', None) or getattr(error, 'http_status', None)
+            if status and 400 <= status < 500 and status != 429:
+                return LLMError(str(error), retryable=False, original=error)
+            return LLMError(str(error), retryable=True, original=error)
+        return LLMError(str(error), retryable=False, original=error)
+
+    def chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        """鍚屾瀵硅瘽 鈥?鑷姩閲嶈瘯 + 闄嶇骇"""
+        last_error = None
+
+        for attempt in range(self._max_retries):
+            try:
+                with _global_semaphore:
+                    return self._raw_chat(messages, stream=stream, label=label)
+            except Exception as e:
+                classified = self._classify_error(e)
+                last_error = classified
+
+                if not classified.retryable:
+                    logger.error(f"LLM 涓嶅彲鎭㈠閿欒: {classified}")
+                    break
+
+                if attempt < self._max_retries - 1:
+                    delay = self._retry_base_delay * (self._retry_backoff ** attempt)
+                    logger.warning(
+                        f"LLM 璋冪敤澶辫触 (灏濊瘯 {attempt + 1}/{self._max_retries})锛?
+                        f"{delay:.1f}s 鍚庨噸璇? {str(e)[:200]}"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"LLM 璋冪敤鍏ㄩ儴 {self._max_retries} 娆￠噸璇曞け璐? {str(e)[:200]}")
+
+        # 鍏ㄩ儴閲嶈瘯澶辫触 鈫?闄嶇骇鍥炲
+        import sys
+        print(f"\n[LLM-FATAL] chat() 鍏ㄩ儴閲嶈瘯澶辫触", file=sys.stderr)
+        if last_error:
+            print(f"[LLM-FATAL] 鏈€鍚庨敊璇? {type(last_error).__name__}: {last_error}", file=sys.stderr)
+            if last_error.original:
+                print(f"[LLM-FATAL] 鍘熷寮傚父: {type(last_error.original).__name__}: {str(last_error.original)[:500]}", file=sys.stderr)
+        print("", file=sys.stderr)
+        return FALLBACK_MESSAGE
+
+    def chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        """娴佸紡瀵硅瘽 鈥?鑷姩閲嶈瘯 + 闄嶇骇"""
+        last_error = None
+
+        for attempt in range(self._max_retries):
+            try:
+                with _global_semaphore:
+                    for chunk in self._raw_chat_stream(messages):
+                        yield chunk
+                    return
+            except Exception as e:
+                classified = self._classify_error(e)
+                last_error = classified
+
+                if not classified.retryable:
+                    logger.error(f"LLM 娴佸紡璋冪敤涓嶅彲鎭㈠閿欒: {classified}")
+                    break
+
+                if attempt < self._max_retries - 1:
+                    delay = self._retry_base_delay * (self._retry_backoff ** attempt)
+                    logger.warning(
+                        f"LLM 娴佸紡璋冪敤澶辫触 (灏濊瘯 {attempt + 1}/{self._max_retries})锛?
+                        f"{delay:.1f}s 鍚庨噸璇? {str(e)[:200]}"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"LLM 娴佸紡璋冪敤鍏ㄩ儴 {self._max_retries} 娆￠噸璇曞け璐? {str(e)[:200]}")
+
+        # 鍏ㄩ儴澶辫触 鈫?杩斿洖闄嶇骇娑堟伅
+        yield FALLBACK_MESSAGE
+
+
+class OllamaProvider(LLMProvider):
+    """Ollama 鏈湴妯″瀷"""
+
+    def __init__(self):
+        super().__init__()
+        self.client = OpenAI(
+            base_url=f"{settings.ollama_base_url}/v1",
+            api_key="ollama"
+        )
+        self._model = settings.ollama_model
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=stream,
+            temperature=0.3,
+        )
+        # 鎵撳嵃 token 浣跨敤鎯呭喌
+        if response.usage:
+            prefix = f"[LLM] {label}" if label else "[LLM]"
+            print(f"{prefix} model={self._model} prompt={response.usage.prompt_tokens} completion={response.usage.completion_tokens} total={response.usage.total_tokens}")
+        return response.choices[0].message.content or ""
+
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
+class OpenAIProvider(LLMProvider):
+    """OpenAI API"""
+
+    def __init__(self):
+        super().__init__()
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY 鏈缃?)
+        self.client = OpenAI(
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key
+        )
+        self._model = settings.openai_model
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        if settings.debug:
+            import sys
+            print(f"[LLM-DEBUG] 璋冪敤: base_url={settings.openai_base_url} model={self._model}", file=sys.stderr)
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=stream,
+            temperature=0.3,
+        )
+        # 鎵撳嵃 token 浣跨敤鎯呭喌
+        if response.usage:
+            prefix = f"[LLM] {label}" if label else "[LLM]"
+            print(f"{prefix} model={self._model} prompt={response.usage.prompt_tokens} completion={response.usage.completion_tokens} total={response.usage.total_tokens}")
+        return response.choices[0].message.content or ""
+
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
+class ZhipuProvider(LLMProvider):
+    """鏅鸿氨 GLM API"""
+
+    def __init__(self):
+        super().__init__()
+        if not settings.zhipu_api_key:
+            raise ValueError("ZHIPU_API_KEY 鏈缃?)
+        self.client = OpenAI(
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            api_key=settings.zhipu_api_key
+        )
+        self._model = settings.zhipu_model
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=stream,
+            temperature=0.3,
+        )
+        # 鎵撳嵃 token 浣跨敤鎯呭喌
+        if response.usage:
+            prefix = f"[LLM] {label}" if label else "[LLM]"
+            print(f"{prefix} model={self._model} prompt={response.usage.prompt_tokens} completion={response.usage.completion_tokens} total={response.usage.total_tokens}")
+        return response.choices[0].message.content or ""
+
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        response = self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
+
+def detect_model_tier(model_name: str) -> str:
+    """妫€娴嬫ā鍨嬭兘鍔涘眰绾? small / medium / large
+
+    浼樺厛绮剧‘鍖归厤锛堢煭妯?鍐掑彿鍒嗛殧鐨?token锛夛紝鍐嶉檷绾у瓙涓插尮閰嶃€?    閬垮厤瀛愪覆璇垽锛氬 qwen3:32b 琚皬妯″瀷瑙勫垯 qwen3 鍛戒腑銆?    """
+    ml = model_name.lower()
+
+    # 绮剧‘ token 闆嗗悎锛堟寜 / - : 鍒嗛殧鍚庨€?token 鍖归厤锛?    tokens = set(re.split(r'[-_:]', ml))
+    # 涔熶繚鐣欏畬鏁村悕鐢ㄤ簬瀛愪覆鍖归厤
+    has_token = lambda *ps: any(p in tokens for p in ps)
+    contains = lambda *ps: any(p in ml for p in ps)
+
+    # === Large: 鏃楄埌绾?===
+    if has_token("gpt-4", "gpt4") or contains("gpt-4", "gpt-4o"):
+        return "large"
+    if has_token("claude"):
+        return "large"
+    if has_token("glm-4") or contains("glm-4"):
+        return "large"
+    if contains("deepseek") and not has_token("7b", "8b", "1.3b", "1.5b"):
+        return "large"  # deepseek-chat / deepseek-v3 = large; deepseek-7b 鈮?large
+    if contains("qwen-max", "qwen2.5-max"):
+        return "large"
+
+    # === Medium: 涓瓑瑙勬ā ===
+    if has_token("14b", "32b", "70b", "72b"):
+        return "medium"
+    if has_token("qwen2.5-32b") or contains("qwen2.5-32b", "llama3-70b"):
+        return "medium"
+
+    # === Small: 灏忔ā鍨?===
+    if has_token("1b", "1.5b", "1.3b", "3b", "7b", "8b"):
+        return "small"
+    if has_token("phi"):
+        return "small"
+    if contains("mistral") and not has_token("large", "medium", "nemo"):
+        return "small"  # mistral-7b 绯诲垪锛沵istral-large 鍙︾畻
+
+    # 鍏滃簳
+    return "medium"
+
+def get_llm() -> LLMProvider:
+    """宸ュ巶鍑芥暟锛氭牴鎹厤缃繑鍥炲搴旂殑 LLM Provider"""
+    provider_map = {
+        "ollama": OllamaProvider,
+        "openai": OpenAIProvider,
+        "zhipu": ZhipuProvider,
+    }
+    provider_class = provider_map.get(settings.llm_provider)
+    if provider_class is None:
+        raise ValueError(f"涓嶆敮鎸佺殑 LLM Provider: {settings.llm_provider}")
+    return provider_class()
+
+
+================================================================================
+ 文件: backend\core\wiki_engine.py  (40.2KB)
+================================================================================
+
+"""Wiki engine - structured knowledge management (LLM Wiki pattern)
+Based on IMPACT-MAP design spec and Karpathy LLM Wiki pattern.
+"""
+import os
+import re
+import time
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List
+from core.prompts import load
+
+from core.config import settings
+from core.llm_provider import get_llm, LLMProvider
+
+
+class WikiEngine:
+    """Wiki engine core"""
+
+    _instance: Optional["WikiEngine"] = None
+
+    @classmethod
+    def get_instance(cls) -> "WikiEngine":
+        """鑾峰彇鍗曚緥锛堥伩鍏嶅娆″姞杞芥ā鍨嬪崰婊″唴瀛橈級"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.paths = settings.get_wiki_paths()
+        self.llm = get_llm()
+        self._ensure_dirs()
+        self._ensure_base_files()
+        self._page_cache = {}
+
+    # ==================== Dirs & Files ====================
+
+    def _ensure_dirs(self):
+        for key in ["raw", "pages"]:
+            self.paths[key].mkdir(parents=True, exist_ok=True)
+        (self.paths["raw"] / "assets").mkdir(exist_ok=True)
+
+    def _ensure_base_files(self):
+        if not self.paths["index"].exists():
+            self.paths["index"].write_text("# Wiki index\n\n> Auto-maintained\n\n", encoding="utf-8")
+        if not self.paths["log"].exists():
+            self.paths["log"].write_text("# Operation log\n\n> Chronological\n\n", encoding="utf-8")
+        # backlinks.json
+        bl_path = self.paths["data"] / "backlinks.json"
+        if not bl_path.exists():
+            bl_path.write_text("{}", encoding="utf-8")
+        # tags.json
+        tp = self.paths["data"] / "tags.json"
+        if not tp.exists():
+            tp.write_text("[]", encoding="utf-8")
+
+    @property
+    def _backlinks_path(self) -> Path:
+        return self.paths["data"] / "backlinks.json"
+
+    @property
+    def _tags_path(self) -> Path:
+        return self.paths["data"] / "tags.json"
+
+    def _read_tags(self) -> list[str]:
+        """Read tags.json, return list of all known tags."""
+        try:
+            return json.loads(self._tags_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, FileNotFoundError):
+            return []
+
+    def _extract_tags_from_page(self, content: str) -> list[str]:
+        """Extract tags list from page frontmatter."""
+        m = re.search(r"^tags:\s*\[(.+?)\]", content, re.MULTILINE)
+        if m:
+            return [t.strip().strip('"\'') for t in m.group(1).split(",") if t.strip()]
+        m = re.search(r"^tags:\s*(.+)$", content, re.MULTILINE)
+        if m:
+            val = m.group(1).strip()
+            if val and val != "[]":
+                return [t.strip() for t in val.split(",") if t.strip()]
+        return []
+
+    def _sync_tags_from_page(self, content: str):
+        """Extract tags from page frontmatter and merge into tags.json."""
+        page_tags = self._extract_tags_from_page(content)
+        if not page_tags:
+            return
+        existing = self._read_tags()
+        merged = list(set(existing + page_tags))
+        if sorted(merged) != sorted(existing):
+            self._tags_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _format_tags_context(self) -> str:
+        """Build tags context string for LLM prompts."""
+        tags = self._read_tags()
+        if not tags:
+            return ""
+        return f"宸叉湁椤甸潰浣跨敤鐨?tags锛歿json.dumps(tags, ensure_ascii=False)}銆備紭鍏堜娇鐢ㄥ凡鏈?tags锛屽惈涔変笉鍖归厤鏃跺彲浠ュ垱寤烘柊 tag銆?
+
+    def get_page_tags(self, page_title: str) -> list[str]:
+        """Public: get tags for a specific page. Reads directly from the page file."""
+        content = self.read_page(page_title)
+        if not content:
+            return []
+        return self._extract_tags_from_page(content)
+
+    def _get_schema(self) -> str:
+        sp = self.paths["data"] / "WIKI-SCHEMA.md"
+        return sp.read_text(encoding="utf-8") if sp.exists() else ""
+
+    # ==================== Core: Query (LLM-driven page selection) ====================
+
+    def query(self, question: str, top_k: int = 5) -> dict:
+        """
+        Karpathy LLM Wiki query pattern per IMPACT-MAP:
+        1. Read index.md to find relevant pages (_find_related_pages via LLM)
+        2. Read those pages
+        3. LLM synthesizes answer (_answer_from_wiki)
+
+        Returns: {"hit": bool, "answer": str, "sources": [str]}
+        """
+        all_pages = self._list_pages()
+        if not all_pages:
+            return {"hit": False, "answer": "", "sources": []}
+
+        # Step 1: LLM selects relevant pages from index
+        selected = self._find_related_pages(question, top_k)
+        if not selected:
+            return {"hit": False, "answer": "", "sources": []}
+
+        # Step 2: Read selected pages
+        pages_content = {}
+        sources = []
+        for title in selected:
+            content = self.read_page(title)
+            if content:
+                pages_content[title] = content
+                sources.append(title)
+
+        if not pages_content:
+            return {"hit": False, "answer": "", "sources": sources}
+
+        # Step 3: LLM synthesizes answer
+        answer = self._answer_from_wiki(question, pages_content)
+        return {"hit": True, "answer": answer, "sources": sources}
+
+    def _find_related_pages(self, question: str, top_k: int = 5) -> list[str]:
+        """LLM reads the index and selects relevant page titles."""
+        index_content = self.get_index()
+
+        # Build a compact page list with first-line summaries
+        page_list_lines = []
+        for fp in sorted(self._list_pages(), key=lambda f: f.stem):
+            try:
+                first_line = fp.read_text(encoding="utf-8").split("\n", 1)[0].lstrip("# ")[:100]
+            except Exception:
+                first_line = ""
+            page_list_lines.append(f"- {fp.stem}: {first_line}")
+        page_list = "\n".join(page_list_lines)
+
+        prompt = load("wiki_find_pages.txt", top_k=top_k, page_list=page_list, question=question)
+
+        try:
+            raw = self.llm.chat([
+                {"role": "system", "content": "浣犲彧杩斿洖鐩稿叧椤甸潰鍚嶇О锛屾瘡琛屼竴涓紝涓嶈鍏朵粬鍐呭銆?},
+                {"role": "user", "content": prompt}
+            ], label="find_pages")
+            titles = []
+            for line in raw.strip().split("\n"):
+                t = line.strip().lstrip("- *0123456789. #锛堬級()")
+                if t:
+                    titles.append(t)
+            return titles[:top_k]
+        except Exception:
+            # Fallback: return all page names
+            return [fp.stem for fp in self._list_pages()[:top_k]]
+
+    def _answer_from_wiki(self, question: str, pages: dict[str, str]) -> str:
+        """LLM synthesizes an answer from wiki page contents."""
+        context_parts = []
+        for title, content in pages.items():
+            if len(content) > 3000:
+                content = content[:3000] + "\n...(鍐呭杩囬暱宸叉埅鏂?"
+            context_parts.append(f"## {title}\n{content}")
+
+        prompt = load("wiki_answer.txt", context="\n\n---\n\n".join(context_parts), question=question)
+
+        try:
+            return self.llm.chat([
+                {"role": "system", "content": (
+                    "浣犳槸浼佷笟鐭ヨ瘑搴撳姪鎵嬶紝鍙緷鎹彁渚涚殑 Wiki 鍐呭鍥炵瓟銆備笉纭畾灏辫涓嶇煡閬撱€俓n\n"
+                    "璇箟鐞嗚В瑙勫垯锛氱敤鎴峰彲鑳界敤涓嶅悓鐨勮瘝鎻忚堪鍚屼竴浠朵簨锛堝銆岃礋璐ｄ汉銆?銆屼富绠°€嶃€?
+                    "銆屽仛鏀粯銆?銆屽弬涓庢敮浠樼郴缁熴€嶏級銆傝缁撳悎涓婁笅鏂囩悊瑙ｇ敤鎴锋剰鍥撅紝涓嶈鍥犱负鐢ㄨ瘝"
+                    "涓嶅畬鍏ㄤ竴鑷村氨璁や负涓嶅尮閰嶃€?
+                )},
+                {"role": "user", "content": prompt}
+            ], label="answer")
+        except Exception:
+            return "绯荤粺绻佸繖锛岃绋嶅悗閲嶈瘯銆?
+
+    # ==================== Core: Ingest (LLM generates wiki pages) ====================
+
+    def ingest(self, content, source_name):
+        """Ingest raw content into wiki. Per IMPACT-MAP:
+        1. LLM generates wiki page(s) (_generate_wiki_page or _generate_wiki_page_small)
+        2. Clean LLM output (_clean_llm_output)
+        3. Auto-link cross-references (_auto_link)
+        4. Write page(s)
+        5. Update backlinks
+        6. Update index
+        7. Append log
+        """
+        from core.llm_provider import detect_model_tier
+
+        schema = self._get_schema()
+        tier = detect_model_tier(getattr(self.llm, 'model_name', ''))
+
+        # Step 1: Generate wiki page(s) (small model uses step-by-step fallback)
+        if tier == "small":
+            wiki_pages = self._generate_wiki_page_small(content, source_name, schema)
+        else:
+            wiki_pages = self._generate_wiki_page(content, source_name, schema)
+
+        if not wiki_pages:
+            return {"wiki_pages": [], "log_entry": "", "error": "Generation failed"}
+
+        all_fns = []
+        all_modified = []
+        log_entries = []
+
+        for wiki_page in wiki_pages:
+            if not wiki_page or not wiki_page.strip():
+                continue
+
+            # Step 2: Clean LLM output
+            wiki_page = self._clean_llm_output(wiki_page)
+
+            # Step 3: Auto-link cross-references
+            wiki_page = self._auto_link(wiki_page)
+
+            title = self._extract_title(wiki_page) or source_name.replace(".md", "")
+            fn = self._safe_filename(title) + ".md"
+            p = self.paths["pages"] / fn
+
+            # Step 3.5: Dedup detection - check if this page already exists
+            matched_title = self._dedup_detect(title)
+            if matched_title and matched_title != title:
+                existing_fn = self._safe_filename(matched_title) + ".md"
+                existing_p = self.paths["pages"] / existing_fn
+                if existing_p.exists():
+                    old_content = existing_p.read_text(encoding="utf-8")
+                    merged = self._merge_pages(matched_title, old_content, title, wiki_page, source_name)
+                    if merged:
+                        wiki_page = merged
+                        title = matched_title
+                        fn = existing_fn
+                        p = existing_p
+                        self._append_log("merge", f"Merged {title} with new content from {source_name}")
+                        self._update_backlinks_for_page(title, wiki_page)
+                        all_fns.append(fn)
+                        log_entries.append(f"{title}(merged)")
+                        p.write_text(wiki_page, encoding="utf-8")
+                        self._page_cache[title] = wiki_page
+                        self._sync_tags_from_page(wiki_page)
+                        self._update_index(title, fn, source_name)
+                        all_modified.append(fn)
+                        continue
+
+            # Step 4: Write page(s)
+            p.write_text(wiki_page, encoding="utf-8")
+            self._page_cache[title] = wiki_page
+
+            # 鍚屾 tags 鍒?tags.json
+            self._sync_tags_from_page(wiki_page)
+
+            # Update backlinks
+            modified = self._update_backlinks_for_page(title, wiki_page)
+            all_modified.extend(modified)
+
+            # Update index
+            self._update_index(title, fn, source_name)
+
+            all_fns.append(fn)
+            log_entries.append(title)
+
+        # 鍒嗘瀽褰卞搷 鈫?鏇存柊宸叉湁椤甸潰
+        affected = self._analyze_impact(content, source_name)
+        if affected:
+            updated = self._update_pages(content, source_name, affected)
+            if updated:
+                all_modified = list(set(all_modified + updated))
+
+        # 鑷姩鍒涘缓涓嶅瓨鍦ㄧ殑閾炬帴椤甸潰
+        auto_created = self._autocreate_linked_pages(all_fns)
+        if auto_created:
+            all_fns.extend(auto_created)
+            all_modified = list(set(all_modified + auto_created))
+
+        # Log
+        extra = f" (updated {len(all_modified)})" if all_modified else ""
+        titles_str = ", ".join(log_entries)
+        log = self._append_log("ingest", f"Imported {source_name} -> {titles_str}{extra}")
+        return {"wiki_pages": all_fns, "modified_pages": all_modified, "log_entry": log}
+
+    def _generate_wiki_page(self, content: str, source_name: str, schema: str = "") -> list[str]:
+        """LLM generates one or more structured wiki pages from raw content.
+        Returns a list of page strings (Markdown with frontmatter).
+        """
+        schema_context = f"""Wiki 鏍煎紡瑙勮寖锛?
+{schema[:2000]}
+""" if schema else ""
+
+        # 璇诲彇鐜版湁 index锛岃 LLM 鐭ラ亾宸叉湁鍝簺椤甸潰鍙氦鍙夊紩鐢?
+        index_context = ""
+        try:
+            index_text = self.paths["index"].read_text(encoding="utf-8")[:2000]
+            if index_text.strip():
+                index_context = f"\n宸叉湁 Wiki 椤甸潰鍒楄〃锛堜緵浜ゅ弶寮曠敤鍙傝€冿級锛歕n{index_text}\n"
+        except:
+            pass
+
+        # 璇诲彇宸叉湁 tags锛屼緵 LLM 浼樺厛澶嶇敤
+        tags_context = self._format_tags_context()
+
+        prompt = load("wiki_ingest.txt",
+            schema_context=schema_context,
+            index_context=index_context,
+            tags_context=tags_context,
+            content=content[:5000],
+            source_name=source_name,
+        )
+
+        try:
+            raw_output = self.llm.chat([
+                {"role": "system", "content": "浣犳槸 Wiki 缂栬緫鍔╂墜锛岃緭鍑虹粨鏋勫寲鐨?Markdown Wiki 椤甸潰銆傚彲鑳借緭鍑哄涓〉闈紝鐢?---NEWPAGE--- 鍒嗛殧銆?},
+                {"role": "user", "content": prompt}
+            ], label="ingest")
+            # Split on separator and return list of pages
+            if "---NEWPAGE---" in raw_output:
+                pages = [p.strip() for p in raw_output.split("---NEWPAGE---")]
+            else:
+                pages = [raw_output.strip()]
+            return [p for p in pages if p]
+        except Exception:
+            # Fallback: simple markdown conversion
+            return [f"""---
+title: {source_name.replace('.md', '')}
+type: source-summary
+created: {datetime.now().strftime('%Y-%m-%d')}
+sources: [{source_name}]
+---
+
+# {source_name.replace('.md', '')}
+
+{content}
+"""]
+
+    def _extract_title(self, wiki_page: str) -> Optional[str]:
+        """Extract title from frontmatter or H1 heading."""
+        # Try frontmatter
+        m = re.search(r"^---\s*\ntitle:\s*(.+?)\s*\n", wiki_page, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        # Try H1
+        m = re.search(r"^#\s+(.+?)$", wiki_page, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    # ==================== Auto-link & Clean ====================
+
+    def _clean_llm_output(self, raw: str) -> str:
+        """Filter LLM verbose prefixes/suffixes, code-block wrappers, and whitespace.
+
+        Called after _generate_wiki_page / _generate_wiki_page_small to ensure
+        clean Markdown enters the wiki store.
+        """
+        if not raw:
+            return raw
+
+        # 1. Remove common Chinese LLM prefixes
+        prefixes = [
+            r'^(濂界殑|娌￠棶棰榺浠ヤ笅鏄瘄杩欐槸鎮ㄩ渶瑕佺殑|鏍规嵁鎮ㄧ殑瑕佹眰|濂界殑锛屼互涓嬫槸)[^銆俓n]*[銆傦細:\n]',
+            r'^(褰撶劧|鍙互鐨剕鏄庣櫧浜?[^銆俓n]*[銆傦細:\n]',
+            r'^(Sure|OK|Here is)[^.]*\.[ \n]',
+        ]
+        for pat in prefixes:
+            raw = re.sub(pat, '', raw, flags=re.IGNORECASE)
+
+        # 2. Remove markdown code block wrappers (```markdown ... ```)
+        raw = re.sub(r'^```(?:markdown|md|wiki|yaml)?\s*\n', '', raw, flags=re.IGNORECASE)
+        raw = re.sub(r'\n```\s*$', '', raw)
+
+        # 3. Strip leading/trailing whitespace and blank lines
+        raw = raw.strip()
+        raw = re.sub(r'\n{3,}', '\n\n', raw)
+
+        return raw
+
+    def _auto_link(self, wiki_page: str) -> str:
+        """Auto-add [[...]] cross-references to known page titles in content.
+
+        Per IMPACT-MAP: called after _generate_wiki_page() return to
+        automatically complete cross-references.
+
+        Strategy:
+        - Get all known page titles, sorted by length desc (longest first)
+        - For each title found in body text (outside code blocks / existing links):
+          wrap it as [[title]]
+        - Skip titles already inside [[...]] or markdown links [text](url)
+        - Skip the page's own title (don't self-link)
+        """
+        known_titles = [fp.stem for fp in self._list_pages()]
+        if not known_titles:
+            return wiki_page
+
+        # Sort by length descending so longer titles match first
+        known_titles.sort(key=len, reverse=True)
+
+        # Extract this page's own title to avoid self-linking
+        own_title = self._extract_title(wiki_page)
+
+        # Split into frontmatter + body (only auto-link body)
+        parts = wiki_page.split('---', 2)
+        if len(parts) >= 3:
+            frontmatter = parts[0] + '---' + parts[1] + '---'
+            body = parts[2]
+        else:
+            frontmatter = ''
+            body = wiki_page
+
+        # Find code blocks and existing links 鈥?protect them
+        protected = []
+
+        def protect(m):
+            protected.append(m.group(0))
+            return f'\x00PROTECT{len(protected)-1}\x00'
+
+        body = re.sub(r'```[\s\S]*?```', protect, body)           # code blocks
+        body = re.sub(r'`[^`]+`', protect, body)                  # inline code
+        body = re.sub(r'\[\[.+?\]\]', protect, body)              # existing [[...]]
+        body = re.sub(r'\[([^\]]+)\]\([^\)]+\)', protect, body)   # markdown links [text](url)
+
+        for title in known_titles:
+            if title == own_title:
+                continue
+            if len(title) < 2:  # skip single-char titles
+                continue
+            # 瀹屾暣璇嶇粍鍖归厤锛岄伩鍏嶅瓙涓茶鍖归厤锛堝"鏀粯"璇尮閰嶅埌"鍦ㄧ嚎鏀粯鏈嶅姟"锛?
+            # 涓枃璇嶈竟鐣岋細鍓嶅悗涓嶈兘鏄?CJK 瀛楃銆佸瓧姣嶃€佹暟瀛?
+            # ASCII 璇嶈竟鐣岋細鍓嶅悗涓嶈兘鏄瓧姣嶃€佹暟瀛椼€佷笅鍒掔嚎
+            escaped = re.escape(title)
+            # 鍒ゆ柇 title 鏄惁鍚?CJK 瀛楃锛岄€夋嫨瀵瑰簲杈圭晫
+            has_cjk = bool(re.search(r'[\u4e00-\u9fff]', title))
+            if has_cjk:
+                # 涓枃璇嶈竟鐣岋細鍓嶅悗涓嶈兘鏄?CJK 缁熶竴琛ㄦ剰鏂囧瓧銆佸瓧姣嶃€佹暟瀛?
+                boundary_l = r'(?<![\u4e00-\u9fffA-Za-z0-9])'
+                boundary_r = r'(?![\u4e00-\u9fffA-Za-z0-9])'
+            else:
+                # ASCII 璇嶈竟鐣?
+                boundary_l = r'(?<![A-Za-z0-9_])'
+                boundary_r = r'(?![A-Za-z0-9_])'
+            replacement = f'[[{title}]]'
+            body = re.sub(
+                boundary_l + escaped + boundary_r,
+                replacement,
+                body
+            )
+
+        # Restore protected blocks
+        for i, block in enumerate(protected):
+            body = body.replace(f'\x00PROTECT{i}\x00', block)
+
+        return frontmatter + body
+
+    def _generate_wiki_page_small(self, content: str, source_name: str, schema: str = "") -> list[str]:
+        """Multi-step wiki page generation for small models (fallback).
+
+        When the LLM is too small to generate a full wiki page in one pass,
+        this method breaks it into three steps:
+        1. Extract title + frontmatter
+        2. Generate body sections
+        3. Add cross-references + 鍙傝
+
+        Returns a list of page strings (typically one).
+        """
+        schema_context = f"Wiki 鏍煎紡瑙勮寖锛歕n{schema[:1500]}\n" if schema else ""
+
+        # Step 1: Title + frontmatter
+        step1_prompt = load("wiki_small_step1.txt", schema_context=schema_context, content=content[:3000])
+        try:
+            frontmatter = self.llm.chat([
+                {"role": "system", "content": "浣犲彧杈撳嚭 YAML frontmatter锛屼笉瑕佸叾浠栧唴瀹广€?},
+                {"role": "user", "content": step1_prompt}
+            ], label="ingest")
+        except Exception:
+            frontmatter = f"---\ntitle: {source_name.replace('.md', '')}\ntype: source-summary\ncreated: {datetime.now().strftime('%Y-%m-%d')}\nsources: [{source_name}]\n---"
+
+        frontmatter = self._clean_llm_output(frontmatter)
+        if not frontmatter.startswith('---'):
+            frontmatter = f"---\ntitle: {source_name.replace('.md', '')}\ntype: source-summary\ncreated: {datetime.now().strftime('%Y-%m-%d')}\nsources: [{source_name}]\n---"
+
+        # Step 2: Body sections
+        step2_prompt = load("wiki_small_step2.txt", content=content[:5000])
+        try:
+            body = self.llm.chat([
+                {"role": "system", "content": "浣犳槸 Wiki 缂栬緫鍔╂墜锛岃緭鍑虹粨鏋勫寲鐨?Markdown 姝ｆ枃銆?},
+                {"role": "user", "content": step2_prompt}
+            ], label="ingest")
+        except Exception:
+            body = f"# {source_name.replace('.md', '')}\n\n{content}"
+
+        body = self._clean_llm_output(body)
+
+        # Step 3: Cross-references + 鍙傝
+        existing_titles = [fp.stem for fp in self._list_pages()]
+        step3_prompt = load("wiki_small_step3.txt",
+            existing_titles=', '.join(existing_titles[:30]),
+            body_tail=body[-2000:],
+        )
+        try:
+            see_also = self.llm.chat([
+                {"role": "system", "content": "浣犲彧杈撳嚭 ## 鍙傝 绔犺妭鍐呭锛屼笉瑕佸叾浠栥€?},
+                {"role": "user", "content": step3_prompt}
+            ], label="ingest")
+        except Exception:
+            see_also = ""
+
+        see_also = self._clean_llm_output(see_also)
+        if see_also and '## 鍙傝' not in body:
+            body = body.rstrip() + '\n\n' + see_also
+
+        return [frontmatter + '\n\n' + body]
+
+    def _get_backlinks_data(self) -> dict:
+        """Read backlinks.json, return {page: {incoming: [...], outgoing: [...]}}."""
+        try:
+            return json.loads(self._backlinks_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+
+    def _save_backlinks_data(self, data: dict):
+        """Write backlinks.json."""
+        self._backlinks_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+
+    def get_backlinks(self, page_name: str) -> dict:
+        """Get incoming/outgoing backlinks for a page.
+        Returns: {"incoming": [str], "outgoing": [str]}
+        """
+        data = self._get_backlinks_data()
+        return data.get(page_name, {"incoming": [], "outgoing": []})
+
+    def _update_backlinks_for_page(self, title: str, content: str) -> list[str]:
+        """Scan [[...]] refs in content, update backlinks.json.
+        Returns: list of page names that were modified.
+        """
+        # Find all [[...]] refs in content
+        refs = re.findall(r"\[\[(.+?)\]\]", content)
+        refs = list(set(refs))  # deduplicate
+
+        data = self._get_backlinks_data()
+        modified = []
+
+        # Ensure this page entry exists
+        if title not in data:
+            data[title] = {"incoming": [], "outgoing": []}
+
+        # Update outgoing for this page
+        old_outgoing = set(data[title].get("outgoing", []))
+        new_outgoing = set(refs)
+        if old_outgoing != new_outgoing:
+            data[title]["outgoing"] = sorted(new_outgoing)
+            modified.append(title)
+
+        # Update incoming for referenced pages
+        for ref in refs:
+            if ref not in data:
+                data[ref] = {"incoming": [], "outgoing": []}
+            incoming = set(data[ref].get("incoming", []))
+            incoming.add(title)
+            data[ref]["incoming"] = sorted(incoming)
+
+        # Remove stale incoming links (pages this page no longer references)
+        removed = old_outgoing - new_outgoing
+        for ref in removed:
+            if ref in data:
+                incoming = set(data[ref].get("incoming", []))
+                incoming.discard(title)
+                data[ref]["incoming"] = sorted(incoming)
+
+        self._save_backlinks_data(data)
+        return modified
+
+    # ==================== Read / List ====================
+
+    def _list_pages(self) -> list[Path]:
+        """List all wiki page files (excluding index.md and log.md)."""
+        return [f for f in self.paths["pages"].glob("*.md")
+                if f.name not in ("index.md", "log.md")]
+
+    def page_count(self) -> int:
+        return len(self._list_pages())
+
+    def get_index(self) -> str:
+        """Return wiki index.md content."""
+        p = self.paths["index"]
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+        # Fallback: auto-generate
+        pages = sorted(self._list_pages())
+        lines = ["# Wiki index\n", "> Auto-generated\n"]
+        for fp in pages:
+            title = fp.stem
+            lines.append(f"- [{title}](./{fp.name}) | {title} | | {title}")
+        return "\n".join(lines)
+
+    def read_page(self, title: str) -> Optional[str]:
+        """Read wiki page by title, returns Markdown or None."""
+        if title in self._page_cache:
+            return self._page_cache[title]
+        # Exact filename match
+        safe = self._safe_filename(title)
+        p = self.paths["pages"] / f"{safe}.md"
+        if p.exists():
+            content = p.read_text(encoding="utf-8")
+            self._page_cache[title] = content
+            return content
+        # Fuzzy match
+        for f in self.paths["pages"].glob("*.md"):
+            if f.stem == safe or f.stem.lower() == title.lower():
+                content = f.read_text(encoding="utf-8")
+                self._page_cache[title] = content
+                return content
+        return None
+
+    # ==================== Lint (Health Check) ====================
+
+    def lint(self) -> list:
+        """Wiki health check. Returns [{type, pages, description, severity}]."""
+        issues = []
+        all_pages = {f.stem: f for f in self._list_pages()}
+
+        # Read index.md references
+        index_path = self.paths["index"]
+        index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+        indexed = set()
+        for line in index_text.split("\n"):
+            if "](" in line:
+                m = re.search(r"\(\.?/?(.+?\.md)\)", line)
+                if m:
+                    indexed.add(m.group(1).replace(".md", ""))
+
+        # Orphan pages
+        for name in all_pages:
+            if name not in indexed and len(all_pages) > 1:
+                issues.append({
+                    "type": "orphan",
+                    "pages": [name],
+                    "description": f"椤甸潰銆寋name}銆嶆湭琚储寮?,
+                    "severity": "warning"
+                })
+
+        # Broken cross-references (only check explicit [[links]], not plain text)
+        for name, fp in all_pages.items():
+            content = fp.read_text(encoding="utf-8")
+            content_clean = re.sub(r"```[\s\S]*?```", "", content)
+            content_clean = re.sub(r"`[^`]+`", "", content_clean)
+            refs = re.findall(r"\[\[(.+?)\]\]", content_clean)
+            for ref in refs:
+                if ref not in all_pages:
+                    issues.append({
+                        "type": "missing_crossref",
+                        "pages": [name, ref],
+                        "description": f"銆寋name}銆嶅紩鐢ㄤ簡涓嶅瓨鍦ㄧ殑椤甸潰銆寋ref}銆?,
+                        "severity": "error"
+                    })
+
+        # Expired pages (frontmatter valid_until)
+        for name, fp in all_pages.items():
+            content = fp.read_text(encoding="utf-8")
+            m = re.search(r"valid_until:\s*(\d{4}-\d{2}-\d{2})", content)
+            if m:
+                try:
+                    deadline = datetime.strptime(m.group(1), "%Y-%m-%d")
+                    if deadline < datetime.now():
+                        issues.append({
+                            "type": "expired",
+                            "pages": [name],
+                            "description": f"椤甸潰銆寋name}銆嶆湁鏁堟湡宸茶繃 ({m.group(1)})",
+                            "severity": "warning"
+                        })
+                except ValueError:
+                    pass
+
+        return issues
+
+    # ==================== Helpers ====================
+
+    def _safe_filename(self, name: str) -> str:
+        return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
+
+    def _update_index(self, title, fn, source_name):
+        """Update index.md with new page entry."""
+        p = self.paths["index"]
+        current = p.read_text(encoding="utf-8") if p.exists() else ""
+        entry = f"- [{title}](./{fn}) | {title} | | {source_name}"
+        if entry not in current:
+            p.write_text(current.rstrip() + "\n" + entry + "\n", encoding="utf-8")
+
+    def _append_log(self, action, detail):
+        """Append operation to log.md."""
+        p = self.paths["log"]
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"## [{ts}] {action}\n{detail}\n\n"
+        current = p.read_text(encoding="utf-8") if p.exists() else ""
+        p.write_text(current + entry, encoding="utf-8")
+        return f"[{ts}] {action}: {detail}"
+
+    # Backward compat alias
+    _log = _append_log
+
+    def _autocreate_linked_pages(self, source_pages: list[str]) -> list[str]:
+        """
+        鎵弿鎸囧畾椤甸潰鐨勬墍鏈?[[閾炬帴]]锛屽涓嶅瓨鍦ㄧ殑椤甸潰鑷姩鍒涘缓銆?
+        source_pages: 鍒氬啓鍏ョ殑椤甸潰鏂囦欢鍚嶅垪琛紙濡?['鏋楁檽钑?md']锛?
+        returns: 鏂板垱寤虹殑椤甸潰鏂囦欢鍚嶅垪琛?
+        """
+        new_pages = []
+        # Collect all [[links]] from source pages
+        links_to_check = []
+        for fn in source_pages:
+            p = self.paths["pages"] / fn
+            if not p.exists():
+                continue
+            try:
+                content = p.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            # Extract [[links]], skipping those inside code blocks
+            clean = p.read_text(encoding="utf-8")
+            clean = re.sub(r"```[\s\S]*?```", "", clean)
+            clean = re.sub(r"`[^`]+`", "", clean)
+            found = re.findall(r"\[\[(.+?)\]\]", clean)
+            for link in found:
+                safe = self._safe_filename(link)
+                target = self.paths["pages"] / f"{safe}.md"
+                if not target.exists() and link not in links_to_check:
+                    links_to_check.append(link)
+
+        if not links_to_check:
+            return []
+
+        # For each missing page, generate content using LLM
+        for link_title in links_to_check:
+            safe = self._safe_filename(link_title)
+            target = self.paths["pages"] / f"{safe}.md"
+
+            # Build context from pages that reference this link
+            context_parts = []
+            for fn in source_pages:
+                p = self.paths["pages"] / fn
+                if p.exists():
+                    try:
+                        text = p.read_text(encoding="utf-8")
+                        context_parts.append(f"## {fn}\n{text[:2000]}")
+                    except Exception:
+                        pass
+
+            if not context_parts:
+                continue
+
+            context_str = "\n\n---\n\n".join(context_parts)
+
+            prompt = load("wiki_autocreate.txt",
+                link_title=link_title,
+                created_date=datetime.now().strftime('%Y-%m-%d'),
+                context_str=context_str,
+            )
+            try:
+                raw = self.llm.chat([
+                    {"role": "system", "content": "浣犳槸 Wiki 缂栬緫鍔╂墜锛屽彧鍩轰簬鎻愪緵鐨勫紩鐢ㄥ唴瀹圭敓鎴愰〉闈€傚鏋滃紩鐢ㄤ腑娌℃湁瀹炶川鎬т俊鎭紝鍥炲 EMPTY_PAGE銆?},
+                    {"role": "user", "content": prompt}
+                ], label="ingest")
+                raw = raw.strip()
+                if raw.upper().startswith("EMPTY_PAGE") or len(raw) < 20:
+                    continue
+
+                page_content = self._clean_llm_output(raw)
+                target.write_text(page_content, encoding="utf-8")
+                self._page_cache[link_title] = page_content
+
+                # Update backlinks
+                self._update_backlinks_for_page(link_title, page_content)
+
+                # Update index
+                fn = f"{safe}.md"
+                self._update_index(link_title, fn, "auto-created")
+                new_pages.append(fn)
+                self._append_log("autocreate", f"Created page {link_title} from [[link]] in {', '.join(source_pages)}")
+            except Exception:
+                continue
+
+        return new_pages
+
+    # ==================== Dedup & Merge ====================
+
+    def _dedup_detect(self, title: str) -> Optional[str]:
+        """Detect if a new page title duplicates an existing wiki page.
+
+        Uses title normalization + fuzzy matching:
+        1. Strip common suffixes
+        2. Compare normalized title against all existing page titles
+        3. Return matched filename or None
+        """
+        if not title:
+            return None
+
+        # Normalize
+        norm = title.lower().strip()
+        norm = re.sub(r"[锛?].*?[锛?]", "", norm)
+        norm = norm.replace('鏈夐檺鍏徃', '').replace('鍏徃', '')
+        norm = norm.replace('v', '').replace('version', '')
+        norm = norm.replace(' ', '').replace('-', '').replace('_', '')
+        norm = norm.replace('[', '').replace(']', '').lstrip('[')
+
+        if not norm:
+            return None
+
+        existing_pages = [fp.stem for fp in self._list_pages()]
+        best_match = None
+        best_score = 0.0
+
+        for stem in existing_pages:
+            stem_norm = stem.lower().strip()
+            stem_norm = re.sub(r"[锛?].*?[锛?]", "", stem_norm)
+            stem_norm = stem_norm.replace('鏈夐檺鍏徃', '').replace('鍏徃', '')
+            stem_norm = stem_norm.replace('v', '').replace('version', '')
+            stem_norm = stem_norm.replace(' ', '').replace('-', '').replace('_', '')
+            stem_norm = stem_norm.replace('[', '').replace(']', '').lstrip('[')
+
+            if not stem_norm:
+                continue
+
+            # Jaccard similarity on character sets
+            set1 = set(norm)
+            set2 = set(stem_norm)
+            intersection = len(set1 & set2)
+            union = len(set1 | set2)
+            score = intersection / union if union > 0 else 0
+
+            # Substring containment bonus
+            if norm in stem_norm or stem_norm in norm:
+                score = max(score, 0.8)
+
+            # Key entity overlap bonus
+            if len(norm) >= 4 and len(stem_norm) >= 4:
+                if norm[:4] in stem_norm or stem_norm[:4] in norm:
+                    score = max(score, 0.75)
+
+            if score > best_score:
+                best_score = score
+                best_match = stem
+
+        if best_score >= 0.6:
+            return best_match
+        return None
+
+    def _merge_pages(self, old_title, old_content, new_title, new_content, source_name):
+        """Merge two wiki pages about the same topic using LLM."""
+        from core.prompts import load
+
+        old_sources = source_name
+        m = __import__("re").search(r"sources:\s*\[(.+?)\]", old_content)
+        if m:
+            old_sources = m.group(1)
+
+        prompt = load("wiki_merge.txt",
+            old_sources=old_sources,
+            old_page=old_content,
+            new_source=source_name,
+            new_page=new_content,
+        )
+
+        try:
+            merged = self.llm.chat([
+                {"role": "system", "content": "浣犳槸 Wiki 缂栬緫鍔╂墜銆傚悎骞朵袱涓悓涓婚鐨勯〉闈紝淇濈暀鎵€鏈変俊鎭€?},
+                {"role": "user", "content": prompt}
+            ], label="ingest")
+
+            if not merged or not merged.strip():
+                return None
+
+            merged = self._clean_llm_output(merged)
+
+            if not merged.startswith('---'):
+                merged = f"---\ntitle: {old_title}\ntype: merged\nsources: [{old_sources}, {source_name}]\n---\n\n{merged}"
+
+            return merged
+        except Exception:
+            return None
+
+    # ==================== Impact Analysis ====================
+
+    def _analyze_impact(self, content, source_name):
+        """Analyze which existing pages may be affected by new content.
+
+        Scans the new content for entity names that match existing page titles.
+        """
+        if not content:
+            return []
+
+        affected = []
+        existing_titles = set()
+        for fp in self._list_pages():
+            existing_titles.add(fp.stem)
+
+        # Check each existing page title against the new content
+        for stem in existing_titles:
+            if len(stem) >= 2 and stem in content:
+                affected.append(stem)
+
+        return affected
+
+    def _update_pages(self, content, source_name, affected):
+        """Update affected existing pages with new information.
+
+        For each affected page, uses LLM to determine if update is needed.
+        Returns list of modified page filenames.
+        """
+        if not affected:
+            return []
+
+        modified = []
+
+        for page_title in affected:
+            fn = self._safe_filename(page_title) + ".md"
+            p = self.paths["pages"] / fn
+
+            if not p.exists():
+                continue
+
+            old_content = p.read_text(encoding="utf-8")
+
+            update_prompt = (
+                f"\u73b0\u6709 Wiki \u9875\u9762\u6807\u9898\uff1a{page_title}\n\n"
+                f"\u73b0\u6709\u9875\u9762\u5185\u5bb9\uff1a\n{old_content[:3000]}\n\n"
+                f"\u65b0\u6765\u6e90 ({source_name}) \u7684\u5185\u5bb9\uff1a\n{content[:3000]}\n\n"
+                "\u8bf7\u5224\u65ad\u65b0\u5185\u5bb9\u662f\u5426\u5305\u542b\u73b0\u6709\u9875\u9762\u4e2d\u4e0d\u5b58\u5728\u7684\u91cd\u8981\u4fe1\u606f\uff0c\u6216\u4e0e\u73b0\u6709\u9875\u9762\u77db\u76fe\u3002\n"
+                "\u5982\u679c\u6709\uff0c\u8bf7\u8f93\u51fa**\u5b8c\u6574\u7684\u66f4\u65b0\u540e\u7684 Wiki \u9875\u9762**\uff08\u5fc5\u987b\u5305\u542b frontmatter\uff0c\u4ee5 --- \u5f00\u5934\uff09\u3002\n"
+                "\u5982\u679c\u6ca1\u6709\u65b0\u4fe1\u606f\uff0c\u8bf7\u53ea\u8f93\u51fa\uff1aNO_UPDATE"
+            )
+
+            try:
+                result = self.llm.chat([
+                    {"role": "system", "content": "\u4f60\u662f Wiki \u7f16\u8f91\u52a9\u624b\u3002\u5224\u65ad\u662f\u5426\u9700\u8981\u66f4\u65b0\u73b0\u6709\u9875\u9762\u3002\u5982\u679c\u66f4\u65b0\uff0c\u8f93\u51fa\u5b8c\u6574\u7684 Wiki \u9875\u9762\u5185\u5bb9\uff0c\u4ee5 --- \u5f00\u5934\u3002"},
+                    {"role": "user", "content": update_prompt}
+                ], label="ingest")
+
+                if result and "NO_UPDATE" not in result:
+                    result = self._clean_llm_output(result)
+
+                    # Strip any LLM commentary before the first frontmatter
+                    result_lines = result.split("\n")
+                    fm_start = -1
+                    for j, rl in enumerate(result_lines):
+                        if rl.strip() == "---":
+                            fm_start = j
+                            break
+
+                    if fm_start >= 0:
+                        result = "\n".join(result_lines[fm_start:])
+                    else:
+                        continue  # No frontmatter = garbage, skip
+
+                    # Verify frontmatter has title
+                    result = result.strip()
+                    title_ok = False
+                    for rl in result.split("\n"):
+                        if rl.strip().startswith("title:"):
+                            title_ok = True
+                            break
+                    if not title_ok:
+                        continue  # Invalid frontmatter, skip
+
+                    p.write_text(result, encoding="utf-8")
+                    self._page_cache[page_title] = result
+                    self._update_backlinks_for_page(page_title, result)
+                    modified.append(fn)
+                    self._append_log("update", f"Updated {page_title} from {source_name}")
+            except Exception:
+                continue
+
+        return modified
+
+
+================================================================================
+ 文件: backend\schemas\schemas.py  (3.5KB)
+================================================================================
+
+"""Pydantic 数据模型"""
+from pydantic import BaseModel, Field
+from typing import Optional, Literal
+
+
+# ===== 请求模型 =====
+
+class QueryRequest(BaseModel):
+    question: str = Field(..., description="用户问题")
+    session_id: Optional[str] = Field(None, description="会话 ID，用于多轮对话")
+    top_k: int = Field(5, description="检索返回条数", ge=1, le=20)
+    stream: bool = Field(False, description="是否流式输出")
+    mode: Literal["auto", "pipeline", "wiki", "rag"] = Field(
+        "auto",
+        description="查询模式: auto=自动, pipeline=流水线, wiki=Wiki直查, rag=RAG直搜"
+    )
+
+
+class IngestRequest(BaseModel):
+    source_name: Optional[str] = Field(None, description="自定义文档名称")
+    auto_score: bool = Field(True, description="是否自动评估质量")
+
+
+class LintRequest(BaseModel):
+    full_scan: bool = Field(False, description="是否全量扫描(否则只检最近变更)")
+
+
+# ===== 响应模型 =====
+
+class SourceInfo(BaseModel):
+    file: str = Field(..., description="来源文件名")
+    page: Optional[int] = Field(None, description="页码")
+    chunk_id: Optional[str] = Field(None, description="切片 ID")
+
+
+class QueryResponse(BaseModel):
+    answer: str = Field(..., description="回答内容")
+    source: str = Field(..., description="答案来源: wiki / rag / agent")
+    source_pages: list[str] = Field(default_factory=list, description="引用的 Wiki 页面")
+    sources: list[SourceInfo] = Field(default_factory=list, description="RAG 来源详情")
+    confidence: str = Field("medium", description="置信度: high / medium / low")
+    cached: bool = Field(False, description="是否来自缓存")
+    ingested_to_wiki: bool = Field(False, description="是否已自动沉淀到 Wiki")
+    session_id: Optional[str] = Field(None)
+    parsed_question: str = Field("", description="预处理后的查询（清洗/精简）")
+    pages_consulted: list[str] = Field(default_factory=list, description="本次查询实际读取的页面名列表")
+
+
+class IngestResponse(BaseModel):
+    status: str = Field(..., description="success / partial / failed")
+    wiki_pages: list[str] = Field(default_factory=list, description="??? Wiki ??")
+    modified_pages: list[str] = Field(default_factory=list, description="?????? Wiki ??")
+    log_entry: str = Field("", description="操作日志条目")
+    error: Optional[str] = Field(None, description="错误信息")
+
+
+class IndexEntry(BaseModel):
+    title: str
+    file: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    updated: str
+
+
+class IndexResponse(BaseModel):
+    categories: dict[str, list[IndexEntry]] = Field(default_factory=dict)
+    total_pages: int = 0
+
+
+class WikiPageResponse(BaseModel):
+    title: str
+    content: str
+    metadata: dict = Field(default_factory=dict)
+    cross_refs: list[str] = Field(default_factory=list)
+
+
+class LintIssue(BaseModel):
+    type: Literal["orphan", "contradiction", "stale", "missing_crossref", "expired", "deprecated_stale", "contradiction_marker"]
+    pages: list[str]
+    description: str
+    severity: Literal["warning", "error"] = "warning"
+
+
+class LintResponse(BaseModel):
+    status: str
+    issues: list[LintIssue] = Field(default_factory=list)
+    scanned_pages: int = 0
+
+
+class HealthResponse(BaseModel):
+    status: str
+    llm_provider: str
+    llm_model: str
+    wiki_pages: int
+    vector_count: int
+    uptime_seconds: float
+
+
+================================================================================
+ 文件: backend\services\query_service.py  (15KB)
+================================================================================
+
+"""查询服务 - Wiki 优先 + RAG 兜底 + 知识复利"""
+import hashlib
+import time
+from collections import OrderedDict
+from typing import Optional
+
+from core.config import settings
+from core.wiki_engine import WikiEngine
+from core.rag_engine import RAGEngine
+from core.llm_provider import get_llm, FALLBACK_MESSAGE
+from core.prompts import load
+
+# 缓存容量上限，防止 OOM
+_QUERY_CACHE_MAX = 200
+_SCORE_CACHE_MAX = 500
+
+
+class QueryService:
+    """知识查询服务"""
+
+    def __init__(self):
+        self.wiki = WikiEngine.get_instance()
+        self.rag = RAGEngine.get_instance()
+        self.llm = get_llm()
+        self._query_cache: OrderedDict[str, dict] = OrderedDict()
+        self._score_cache: OrderedDict[str, int] = OrderedDict()
+        self._session_history: dict[str, list[dict]] = {}  # session_id -> [{question, answer}, ...]
+        self._max_history = settings.max_history_rounds
+        self._cache_stats = {"query_hits": 0, "query_misses": 0, "score_hits": 0, "score_misses": 0}
+
+    def query(self, question: str, top_k: int = 5, session_id: str = None) -> dict:
+        """
+        查询流程：
+        1. 先查缓存
+        2. 查 Wiki
+        3. Wiki 命中 → 回答
+        4. Wiki 未命中 → RAG 兜底
+        5. RAG 回答好 → 自动存档 Wiki（知识复利）
+        """
+        # 1. 缓存检查
+        cache_key = hashlib.md5(question.encode()).hexdigest()
+        cached = self._check_cache(cache_key)
+        if cached:
+            cached["cached"] = True
+            return cached
+
+        # 2. Wiki 查询
+        if session_id:
+            session_context, active_entities = self._get_session_context(session_id)
+        else:
+            session_context, active_entities = "", []
+        try:
+            wiki_result = self.wiki.query(question, top_k)
+            wiki_hit = wiki_result.get("hit", False)
+        except (AttributeError, NotImplementedError):
+            wiki_hit = False
+            wiki_result = {}
+
+        if wiki_hit:
+            answer = wiki_result["answer"]
+            result = {
+                "answer": answer,
+                "source": "wiki",
+                "source_pages": wiki_result["sources"],
+                "sources": [],
+                "confidence": "high",
+                "cached": False,
+            }
+            self._update_cache(cache_key, result)
+            if session_id:
+                self._save_to_session(session_id, question, result["answer"])
+            return result
+
+        # 3. RAG 兜底
+        # 3.1 Query 改写
+        rewritten_query = self._rewrite_query(question, active_entities)
+        # 3.2 检索
+        docs = self.rag.retrieve(rewritten_query, top_k)
+        # 3.3 回答
+        answer = self.rag.answer(question, docs)
+
+        # 3.4 评估答案质量
+        score = self._evaluate_answer(question, answer)
+        confidence = "high" if score >= 8 else "medium" if score >= 5 else "low"
+
+        # 3.5 知识复利：好答案存档
+        if score >= settings.agent_min_self_score:
+            try:
+                self.wiki.ingest(
+                    f"问题：{question}\n\n答案：{answer}",
+                    f"qa-{cache_key[:8]}.md"
+                )
+            except (AttributeError, NotImplementedError):
+                pass  # WikiEngine 尚未完整实现，跳过知识复利
+
+        sources = [
+            {"file": doc["metadata"].get("source", "unknown"), "score": doc.get("score", 0)}
+            for doc in docs[:3]
+        ]
+
+        result = {
+            "answer": answer,
+            "source": "rag",
+            "source_pages": [],
+            "sources": sources,
+            "confidence": confidence,
+            "cached": False,
+        }
+
+        self._update_cache(cache_key, result)
+        if session_id:
+            self._save_to_session(session_id, question, result["answer"])
+        return result
+
+    def _rewrite_query(self, question: str, entities: list = None) -> str:
+        """Query 改写：补充关键词 + 利用活跃实体解决代词指代"""
+        prompt = load("rag_rewrite.txt", question=question)
+        if entities:
+            entity_str = "、".join(entities)
+            prompt += f"\n注意：当前已知活跃实体：{entity_str}。如果问题中有代词（如他/她/它/这/那/这个/那个），请结合活跃实体将代词替换为具体名称后再提取关键词。"
+        try:
+            rewritten = self.llm.chat([
+                {"role": "system", "content": "你只输出关键词，不输出其他内容。"},
+                {"role": "user", "content": prompt}
+            ], label="rewrite")
+            # 合并原问题 + 改写关键词
+            return f"{question} {rewritten.strip()}"
+        except Exception:
+            return question
+
+    def _evaluate_answer(self, question: str, answer: str) -> int:
+        """答案质量评估"""
+        # 先查评分缓存
+        cache_key = hashlib.md5((question + answer).encode()).hexdigest()
+        if cache_key in self._score_cache:
+            self._score_cache.move_to_end(cache_key)
+            self._cache_stats["score_hits"] += 1
+            return self._score_cache[cache_key]
+        self._cache_stats["score_misses"] += 1
+
+        prompt = load("rag_evaluate.txt", question=question, answer=answer)
+        try:
+            response = self.llm.chat([
+                {"role": "system", "content": "你只输出一个 1-10 的数字。"},
+                {"role": "user", "content": prompt}
+            ], label="evaluate")
+            score = int(response.strip())
+            score = max(1, min(10, score))
+            self._score_cache[cache_key] = score
+            # LRU 淘汰
+            while len(self._score_cache) > _SCORE_CACHE_MAX:
+                self._score_cache.popitem(last=False)
+            return score
+        except Exception:
+            return 5  # 默认中等分
+
+    def _check_cache(self, key: str) -> Optional[dict]:
+        """检查查询缓存（LRU）"""
+        if key in self._query_cache:
+            entry = self._query_cache[key]
+            if time.time() - entry["_ts"] < settings.query_cache_ttl_seconds:
+                # 命中：移到末尾（最近使用）
+                self._query_cache.move_to_end(key)
+                self._cache_stats["query_hits"] += 1
+                return entry["data"]
+            else:
+                # 过期：删除
+                del self._query_cache[key]
+        self._cache_stats["query_misses"] += 1
+        return None
+
+    def _update_cache(self, key: str, data: dict):
+        """更新查询缓存（LRU 淘汰，失败/降级回复不入缓存）"""
+        answer = data.get("answer", "")
+        # 降级回复不缓存（避免后续查询命中失败缓存）
+        if answer == FALLBACK_MESSAGE:
+            return
+        # 明确的无结果回复也不缓存
+        if answer.strip() in ("未找到相关文档，无法回答此问题。",):
+            return
+        # 如果已存在则更新并移到末尾
+        if key in self._query_cache:
+            self._query_cache.move_to_end(key)
+        self._query_cache[key] = {
+            "data": data,
+            "_ts": time.time(),
+        }
+        # LRU 淘汰：超出上限时删除最旧的
+        while len(self._query_cache) > _QUERY_CACHE_MAX:
+            self._query_cache.popitem(last=False)
+
+    def agent_query(self, question: str) -> dict:
+        """
+        通过 ReAct Agent 执行查询（自主决策式）
+        Agent 会自己决定查 Wiki 还是 RAG、是否自评、是否沉淀。
+        """
+        from core.agent import ReActAgent
+        agent = ReActAgent()
+        return agent.run(question)
+
+
+    def _get_session_context(self, session_id: str) -> tuple:
+        """Get recent conversation context and active entities (last 3 rounds deduped)"""
+        if not session_id or session_id not in self._session_history:
+            return "", []
+        history = self._session_history[session_id][-self._max_history:]
+        if not history:
+            return "", []
+        lines = ["Previous conversation:"]
+        for h in history:
+            lines.append(f"Q: {h['question'][:200]}")
+            lines.append(f"A: {h['answer'][:200]}")
+        # Active entities: deduped from last 3 rounds
+        active_entities = []
+        seen = set()
+        for h in history[-3:]:
+            for e in (h.get("entities") or []):
+                if e not in seen:
+                    seen.add(e)
+                    active_entities.append(e)
+        return "\n".join(lines), active_entities
+
+    def _extract_entities(self, question: str, answer: str) -> list:
+        """使用 LLM 从问答中提取命名实体（人名、部门名、项目名等）"""
+        import json
+        prompt = f"""从以下对话中提取所有命名实体（人名、部门名、项目名、产品名、公司名、职位名等）。只返回 JSON 数组，不含其他内容。没有实体则返回 []。
+
+问题：{question[:500]}
+回答：{answer[:500]}
+
+输出示例：["张三", "技术部", "项目Alpha"]"""
+        try:
+            response = self.llm.chat([
+                {"role": "system", "content": "你只输出 JSON 数组，不输出其他内容。"},
+                {"role": "user", "content": prompt}
+            ], label="extract_entities")
+            entities = json.loads(response.strip())
+            return entities if isinstance(entities, list) else []
+        except Exception:
+            return []
+
+    def _save_to_session(self, session_id: str, question: str, answer: str):
+        """Save Q&A to session history with entity extraction"""
+        if not session_id:
+            return
+        if session_id not in self._session_history:
+            self._session_history[session_id] = []
+        entities = self._extract_entities(question, answer)
+        self._session_history[session_id].append({
+            "question": question,
+            "answer": answer[:500],
+            "entities": entities
+        })
+        # Trim to max
+        if len(self._session_history[session_id]) > self._max_history:
+            self._session_history[session_id] = self._session_history[session_id][-self._max_history:]
+
+
+    def _rag_only_query(self, question: str, top_k: int = 5) -> dict:
+        """只查 RAG，不查 Wiki"""
+        docs = self.rag.retrieve(question, top_k)
+        if not docs:
+            return {"answer": "RAG 中未找到相关信息。", "source": "rag", "source_pages": [], "sources": [], "confidence": "low"}
+        answer = self.rag.answer(question, docs)
+        sources = [{"file": d.get("metadata", {}).get("source", ""), "score": d.get("score", 0)} for d in docs[:3]]
+        return {"answer": answer, "source": "rag", "source_pages": [], "sources": sources, "confidence": "medium"}
+
+    # Patterns that indicate a wiki answer is not actually useful
+    _NO_ANSWER_PATTERNS = [
+        "NO_ANSWER",
+        "未找到",
+        "未在.*找到",
+        "无法确定",
+        "无法比较",
+        "无法回答",
+        "未明确提及",
+        "内容中未",
+        "没有提供",
+        "没有提及",
+        "无法提供",
+        "无法进行",
+        "信息不足",
+        "无法得知",
+        "无法确认",
+    ]
+
+    def _is_low_quality_answer(self, answer: str) -> bool:
+        """Check if a wiki answer is a non-answer (acknowledged failure to find info)."""
+        if not answer or not answer.strip():
+            return True
+        stripped = answer.strip()
+        # Very short answers are likely non-answers
+        if len(stripped) < 10:
+            return True
+        import re
+        for pattern in self._NO_ANSWER_PATTERNS:
+            if re.search(pattern, stripped):
+                return True
+        return False
+
+    def query_with_mode(self, question: str, mode: str = "auto", top_k: int = 5, session_id: str = None) -> dict:
+        """
+        统一查询入口，支持以下模式：
+        - auto: Wiki BFS → 未命中/低质量 → RAG 兜底
+        - wiki: 仅 Wiki 检索，未命中返回"未找到"
+        - rag: 仅 RAG 语义搜索
+        - pipeline: 固定流水线（Wiki→RAG）
+        """
+        from core.agent import ReActAgent
+
+        if mode == "auto":
+            agent = ReActAgent()
+            result = agent.run(question)  # run() has built-in wiki→RAG fallback
+            # Double-check: even run() may return low-quality wiki answers
+            if self._is_low_quality_answer(result.get("answer", "")):
+                rag_result = self._rag_only_query(question, top_k)
+                if not self._is_low_quality_answer(rag_result.get("answer", "")):
+                    # Merge pages_consulted from wiki attempt
+                    rag_result["pages_consulted"] = result.get("pages_consulted", [])
+                    rag_result["parsed_question"] = result.get("parsed_question", "")
+                    return rag_result
+                # Both failed — return the more informative one
+                if len(rag_result.get("answer", "")) > len(result.get("answer", "")):
+                    rag_result["pages_consulted"] = result.get("pages_consulted", [])
+                    rag_result["parsed_question"] = result.get("parsed_question", "")
+                    return rag_result
+            return result
+
+        elif mode == "wiki":
+            agent = ReActAgent()
+            result = agent.run_wiki_only(question)
+            if result.get("answer"):
+                return result
+            return {
+                "answer": "Wiki 中未找到相关信息。",
+                "source": "wiki",
+                "source_pages": [],
+                "sources": [],
+                "confidence": "low",
+            }
+
+        elif mode == "rag":
+            return self._rag_only_query(question, top_k)
+
+        elif mode == "pipeline":
+            return self.query(question, top_k, session_id)
+
+        else:
+            # Fallback to auto
+            return self.query_with_mode(question, "auto", top_k, session_id)
+
+    def get_cache_stats(self) -> dict:
+        """获取缓存命中统计"""
+        total_q = self._cache_stats["query_hits"] + self._cache_stats["query_misses"]
+        total_s = self._cache_stats["score_hits"] + self._cache_stats["score_misses"]
+        return {
+            "query_cache": {
+                "hits": self._cache_stats["query_hits"],
+                "misses": self._cache_stats["query_misses"],
+                "hit_rate": round(self._cache_stats["query_hits"] / max(total_q, 1), 3),
+                "size": len(self._query_cache),
+            },
+            "score_cache": {
+                "hits": self._cache_stats["score_hits"],
+                "misses": self._cache_stats["score_misses"],
+                "hit_rate": round(self._cache_stats["score_hits"] / max(total_s, 1), 3),
+                "size": len(self._score_cache),
+            },
+        }
+
+
+================================================================================
+ 文件: backend\static\index.html  (31.9KB)
+================================================================================
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeXFiles 路 鐭ヨ瘑闂瓟</title>
+<style>
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   DESIGN TOKENS 鈥?Light Glassmorphism
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+:root {
+  /* Surfaces 鈥?warm white with glass */
+  --bg-root:    #f0f2f8;
+  --bg-surface: rgba(255, 255, 255, 0.62);
+  --bg-raised:  rgba(255, 255, 255, 0.45);
+  --bg-hover:   rgba(255, 255, 255, 0.7);
+  --bg-active:  rgba(240, 242, 250, 0.6);
+  --bg-overlay: rgba(255, 255, 255, 0.8);
+
+  /* Text 鈥?warm depth */
+  --text-primary:   #1a1d2e;
+  --text-secondary: #5c6178;
+  --text-tertiary:  #8e93a8;
+  --text-disabled:  #bfc3d2;
+  --text-inverse:   #ffffff;
+
+  /* Accent 鈥?warm indigo-violet */
+  --accent:        #5b5ce6;
+  --accent-hover:  #4a4bd6;
+  --accent-soft:   rgba(91, 92, 230, 0.12);
+  --accent-glow:   rgba(91, 92, 230, 0.25);
+  --accent-subtle: rgba(91, 92, 230, 0.06);
+  --accent-warm:   #f0936b;
+
+  /* Semantic */
+  --success:  #2eac8e;
+  --error:    #e55858;
+  --error-bg: rgba(229, 88, 88, 0.08);
+  --error-border: rgba(229, 88, 88, 0.18);
+
+  /* Borders 鈥?glass edges */
+  --border-subtle:  rgba(255, 255, 255, 0.5);
+  --border-default: rgba(0, 0, 0, 0.06);
+  --border-strong:  rgba(0, 0, 0, 0.1);
+  --border-glass:   rgba(255, 255, 255, 0.6);
+
+  /* Glass */
+  --glass-bg:       rgba(255, 255, 255, 0.55);
+  --glass-bg-hover: rgba(255, 255, 255, 0.72);
+  --glass-border:   rgba(255, 255, 255, 0.7);
+  --glass-blur:     24px;
+
+  /* Chat bubbles */
+  --bubble-user: linear-gradient(135deg, #5b5ce6 0%, #8b7cf7 100%);
+  --bubble-bot:  rgba(255, 255, 255, 0.6);
+
+  /* Animation */
+  --ease-out-expo:  cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --dur-micro:  100ms;
+  --dur-fast:   180ms;
+  --dur-normal: 240ms;
+  --dur-slow:   350ms;
+  --dur-page:   500ms;
+
+  /* Spacing */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+
+  /* Radii */
+  --r-sm:   8px;
+  --r-md:   12px;
+  --r-lg:   18px;
+  --r-xl:   24px;
+  --r-2xl:  28px;
+  --r-full: 999px;
+
+  /* Shadows 鈥?soft luminous */
+  --shadow-float:  0 4px 20px rgba(91, 92, 230, 0.08), 0 1px 4px rgba(0,0,0,0.04);
+  --shadow-raised: 0 8px 32px rgba(91, 92, 230, 0.1), 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-glow:   0 0 0 3px rgba(91, 92, 230, 0.18), 0 0 20px rgba(91, 92, 230, 0.08);
+  --shadow-accent: 0 4px 20px rgba(91, 92, 230, 0.25);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   AMBIENT 鈥?soft warm gradient orbs
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.bg-ambient {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.5;
+  animation: orb-drift 22s ease-in-out infinite alternate;
+}
+.bg-orb--1 {
+  width: 480px; height: 480px;
+  background: radial-gradient(circle, rgba(91,92,230,0.28) 0%, transparent 70%);
+  top: -8%; left: -5%;
+  animation-duration: 24s;
+}
+.bg-orb--2 {
+  width: 380px; height: 380px;
+  background: radial-gradient(circle, rgba(240,147,107,0.22) 0%, transparent 70%);
+  bottom: -3%; right: -3%;
+  animation-duration: 20s;
+  animation-delay: -9s;
+}
+.bg-orb--3 {
+  width: 300px; height: 300px;
+  background: radial-gradient(circle, rgba(139,124,247,0.2) 0%, transparent 70%);
+  top: 45%; left: 55%;
+  animation-duration: 26s;
+  animation-delay: -15s;
+}
+
+@keyframes orb-drift {
+  0%   { transform: translate(0, 0) scale(1); }
+  33%  { transform: translate(35px, -25px) scale(1.08); }
+  66%  { transform: translate(-18px, 35px) scale(0.96); }
+  100% { transform: translate(25px, 15px) scale(1.04); }
+}
+
+/* Noise texture */
+.bg-ambient::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.02;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   HEADER 鈥?frosted glass
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 28px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-bottom: 1px solid var(--border-glass);
+  flex-shrink: 0;
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #5b5ce6 0%, #8b7cf7 60%, #f0936b 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  box-shadow: var(--shadow-accent);
+  animation: logo-glow 4s ease-in-out infinite alternate;
+}
+
+@keyframes logo-glow {
+  0%   { box-shadow: 0 4px 20px rgba(91,92,230,0.3); }
+  100% { box-shadow: 0 4px 20px rgba(240,147,107,0.35); }
+}
+
+.header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.header-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--accent-soft);
+  letter-spacing: 0.02em;
+}
+
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(46, 172, 142, 0.15), 0 0 8px rgba(46, 172, 142, 0.3);
+  animation: status-pulse 2.5s ease-in-out infinite;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.6; transform: scale(0.82); }
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   CHAT CONTAINER
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.chat-container {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px 28px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+}
+
+.chat-container::-webkit-scrollbar {
+  width: 5px;
+}
+.chat-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-container::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.06);
+  border-radius: 3px;
+}
+.chat-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,0.12);
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   MESSAGE BUBBLES 鈥?glass cards
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.message {
+  max-width: 72%;
+  padding: 14px 20px;
+  border-radius: var(--r-xl);
+  font-size: 14px;
+  line-height: 1.65;
+  word-wrap: break-word;
+  animation: msg-enter var(--dur-slow) var(--ease-out-expo) both;
+  will-change: transform, opacity;
+  transition:
+    box-shadow var(--dur-fast) var(--ease-out-cubic),
+    transform var(--dur-fast) var(--ease-out-cubic),
+    border-color var(--dur-fast) var(--ease-out-cubic);
+}
+
+@keyframes msg-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* User message 鈥?gradient glass */
+.message.user {
+  align-self: flex-end;
+  background: var(--bubble-user);
+  color: #fff;
+  border-bottom-right-radius: var(--r-sm);
+  box-shadow: var(--shadow-accent);
+  border: 1px solid rgba(255,255,255,0.2);
+  font-weight: 450;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle shimmer on user messages */
+.message.user::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  animation: shimmer-sweep 5s ease-in-out infinite;
+}
+
+@keyframes shimmer-sweep {
+  0%, 100% { left: -100%; }
+  50%      { left: 100%; }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .message.user:hover {
+    box-shadow: 0 6px 28px rgba(91,92,230,0.35);
+    transform: translateY(-1px);
+  }
+}
+
+/* Bot message 鈥?frosted white card */
+.message.bot {
+  align-self: flex-start;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  color: var(--text-primary);
+  border-bottom-left-radius: var(--r-sm);
+  box-shadow: var(--shadow-float);
+  border: 1px solid var(--glass-border);
+}
+@media (hover: hover) and (pointer: fine) {
+  .message.bot:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-raised);
+  }
+}
+
+.message.bot .source-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: var(--r-full);
+  margin-top: 12px;
+  border: 1px solid rgba(91, 92, 230, 0.15);
+}
+
+/* ===== RAG Answer HTML Styles 鈥?Light Glass ===== */
+.message.bot .rag-answer {
+  line-height: 1.75;
+}
+
+.message.bot .rag-section {
+  margin-bottom: 10px;
+}
+
+.message.bot .rag-label {
+  display: inline-block;
+  font-size: 0.76em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(91, 92, 230, 0.1);
+  padding: 2px 10px;
+  border-radius: 6px;
+  margin-right: 8px;
+  vertical-align: baseline;
+}
+
+.message.bot .rag-content {
+  color: var(--text-primary);
+}
+
+.message.bot .rag-content strong {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.message.bot .rag-list {
+  margin: 6px 0 6px 0;
+  padding-left: 18px;
+  list-style: none;
+}
+
+.message.bot .rag-list li {
+  margin-bottom: 6px;
+  line-height: 1.65;
+  padding-left: 14px;
+  position: relative;
+}
+
+.message.bot .rag-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(91,92,230,0.3);
+}
+
+.message.bot .rag-source {
+  display: inline;
+  font-size: 0.84em;
+  font-weight: 600;
+  color: var(--accent-warm);
+  background: rgba(240, 147, 107, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(240, 147, 107, 0.12);
+}
+
+.message.bot .rag-footer {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-default);
+  font-size: 0.84em;
+  color: var(--text-tertiary);
+}
+/* ===== End RAG Styles ===== */
+
+.message.bot .confidence {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
+
+.message.bot .query-detail {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-default);
+  line-height: 1.5;
+}
+
+/* Error message */
+.message.error-msg {
+  align-self: flex-start;
+  background: var(--error-bg);
+  color: var(--error);
+  border: 1px solid var(--error-border);
+  border-radius: var(--r-xl);
+  border-bottom-left-radius: var(--r-sm);
+  padding: 14px 20px;
+  font-size: 13.5px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   TYPING INDICATOR 鈥?glass bubble
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.typing-indicator {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float);
+  padding: 16px 22px;
+  border-radius: var(--r-xl);
+  border-bottom-left-radius: var(--r-sm);
+  animation: msg-enter var(--dur-slow) var(--ease-out-expo) both;
+  will-change: transform, opacity;
+}
+
+.typing-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(91,92,230,0.3);
+  animation: typing-bounce 1.4s var(--ease-out-expo) infinite;
+}
+.typing-indicator .dot:nth-child(2) { animation-delay: 0.16s; }
+.typing-indicator .dot:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes typing-bounce {
+  0%, 40% {
+    transform: translateY(0) scale(1);
+    opacity: 0.4;
+  }
+  20% {
+    transform: translateY(-8px) scale(1.3);
+    background: var(--accent-warm);
+    box-shadow: 0 0 10px rgba(240,147,107,0.4);
+    opacity: 1;
+  }
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   WELCOME STATE 鈥?glass hero
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 300px;
+  text-align: center;
+}
+
+.welcome-icon {
+  width: 68px;
+  height: 68px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #5b5ce6 0%, #8b7cf7 50%, #f0936b 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  color: #fff;
+  margin-bottom: 24px;
+  box-shadow: 0 8px 32px rgba(91,92,230,0.25), 0 0 0 1px rgba(255,255,255,0.3) inset;
+  animation: welcome-icon-enter 800ms var(--ease-out-expo) both, icon-glow 4s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+
+@keyframes welcome-icon-enter {
+  from { opacity: 0; transform: scale(0.6) translateY(20px) rotate(-10deg); }
+  to   { opacity: 1; transform: scale(1) translateY(0) rotate(0deg); }
+}
+
+@keyframes icon-glow {
+  0%   { box-shadow: 0 8px 32px rgba(91,92,230,0.25), 0 0 0 1px rgba(255,255,255,0.3) inset; }
+  100% { box-shadow: 0 8px 32px rgba(240,147,107,0.3), 0 0 0 1px rgba(255,255,255,0.4) inset; }
+}
+
+.welcome h2 {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  letter-spacing: -0.03em;
+  animation: welcome-text-enter 600ms 100ms var(--ease-out-expo) both;
+  will-change: transform, opacity;
+}
+
+.welcome p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 400px;
+  animation: welcome-text-enter 600ms 180ms var(--ease-out-expo) both;
+  will-change: transform, opacity;
+}
+
+@keyframes welcome-text-enter {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Suggestion chips 鈥?glass capsules */
+.welcome-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 32px;
+}
+
+.welcome-suggestion {
+  font-size: 13px;
+  padding: 9px 20px;
+  border-radius: var(--r-full);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  color: var(--text-secondary);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out-cubic),
+    border-color var(--dur-fast) var(--ease-out-cubic),
+    color var(--dur-fast) var(--ease-out-cubic),
+    transform var(--dur-fast) var(--ease-out-cubic),
+    box-shadow var(--dur-fast) var(--ease-out-cubic);
+  animation: chip-enter 500ms var(--ease-out-expo) both;
+  will-change: transform;
+}
+.welcome-suggestion:nth-child(1) { animation-delay: 300ms; }
+.welcome-suggestion:nth-child(2) { animation-delay: 380ms; }
+.welcome-suggestion:nth-child(3) { animation-delay: 460ms; }
+.welcome-suggestion:nth-child(4) { animation-delay: 540ms; }
+
+@keyframes chip-enter {
+  from { opacity: 0; transform: translateY(14px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .welcome-suggestion:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(91,92,230,0.18);
+  }
+}
+
+.welcome-suggestion:active {
+  transform: scale(0.96);
+  transition: transform var(--dur-micro) var(--ease-out-cubic);
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   INPUT AREA 鈥?frosted glass footer
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.input-area {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 28px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-top: 1px solid var(--border-glass);
+  flex-shrink: 0;
+}
+
+/* Mode selector 鈥?segmented pill bar */
+.mode-bar {
+  display: flex;
+  gap: 0;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-glass);
+  padding: 3px;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-float);
+}
+
+.mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 550;
+  font-family: inherit;
+  padding: 7px 14px;
+  border-radius: var(--r-full);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-out-cubic),
+    color var(--dur-fast) var(--ease-out-cubic),
+    box-shadow var(--dur-fast) var(--ease-out-cubic);
+  letter-spacing: 0.01em;
+}
+
+.mode-btn.active {
+  background: #fff;
+  color: var(--accent);
+  box-shadow: 0 2px 8px rgba(91,92,230,0.18), 0 0 0 1px rgba(91,92,230,0.12);
+  font-weight: 650;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .mode-btn:not(.active):hover {
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.4);
+  }
+}
+
+.mode-btn:active {
+  transform: scale(0.95);
+  transition: transform var(--dur-micro) var(--ease-out-cubic);
+}
+
+/* Input field 鈥?glass */
+.input-wrapper {
+  flex: 1;
+  position: relative;
+}
+
+.input-field {
+  width: 100%;
+  padding: 11px 18px;
+  border: 1px solid var(--border-glass);
+  border-radius: var(--r-full);
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--text-primary);
+  outline: none;
+  transition:
+    border-color var(--dur-fast) var(--ease-out-cubic),
+    box-shadow var(--dur-fast) var(--ease-out-cubic),
+    background var(--dur-fast) var(--ease-out-cubic);
+}
+.input-field::placeholder {
+  color: var(--text-disabled);
+}
+.input-field:focus {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glow);
+  background: rgba(255, 255, 255, 0.75);
+}
+.input-field:focus::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Send button 鈥?glowing gradient */
+.send-btn {
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bubble-user);
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    background var(--dur-fast) var(--ease-out-cubic),
+    transform var(--dur-fast) var(--ease-out-cubic),
+    box-shadow var(--dur-fast) var(--ease-out-cubic);
+  will-change: transform;
+  box-shadow: var(--shadow-accent);
+}
+
+.send-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0;
+  background: radial-gradient(circle, rgba(255,255,255,0.5) 0%, transparent 70%);
+  transform: scale(0);
+  transition: none;
+}
+
+.send-btn:active::after {
+  opacity: 1;
+  transform: scale(2.5);
+  transition: transform 400ms var(--ease-out-quart), opacity 400ms var(--ease-out-quart);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .send-btn:hover {
+    transform: scale(1.08);
+    box-shadow: 0 6px 24px rgba(91,92,230,0.4), 0 0 0 2px rgba(91,92,230,0.15);
+  }
+}
+
+.send-btn:active {
+  transform: scale(0.93);
+  transition: transform var(--dur-micro) var(--ease-out-cubic);
+}
+
+.send-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.send-btn:disabled {
+  background: #d8dae5;
+  color: var(--text-disabled);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.send-btn:disabled::after {
+  display: none;
+}
+
+.send-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  position: relative;
+  z-index: 1;
+  transition: transform var(--dur-fast) var(--ease-out-cubic);
+}
+@media (hover: hover) and (pointer: fine) {
+  .send-btn:not(:disabled):hover svg {
+    transform: translateX(1px) translateY(-1px);
+  }
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   KEYBOARD HINT
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+.kbd-hint {
+  position: absolute;
+  right: 56px;
+  bottom: 4px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-fast) var(--ease-out-cubic),
+    transform var(--dur-fast) var(--ease-out-cubic);
+}
+.input-field:focus ~ .kbd-hint,
+.input-field:not(:placeholder-shown) ~ .kbd-hint {
+  opacity: 1;
+  transform: translateY(0);
+}
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--glass-bg);
+  border: 1px solid var(--border-default);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  font-family: inherit;
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   ACCESSIBILITY
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .bg-orb { animation: none; }
+  .bg-ambient::after { display: none; }
+  .chat-container { scroll-behavior: auto; }
+  .welcome-icon { animation: none; opacity: 1; }
+  .welcome h2, .welcome p { animation: none; opacity: 1; }
+  .welcome-suggestion { animation: none; opacity: 1; }
+  .message { animation: none; opacity: 1; }
+  .typing-indicator { animation: none; opacity: 1; }
+  .send-btn::after { display: none; }
+}
+
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   RESPONSIVE
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+@media (max-width: 640px) {
+  .header { padding: 10px 16px; }
+  .chat-container { padding: 16px; }
+  .input-area { padding: 12px 16px; gap: 8px; }
+  .message { max-width: 88%; padding: 12px 16px; }
+  .welcome h2 { font-size: 22px; }
+  .header-badge { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="bg-ambient">
+  <div class="bg-orb bg-orb--1"></div>
+  <div class="bg-orb bg-orb--2"></div>
+  <div class="bg-orb bg-orb--3"></div>
+</div>
+
+<header class="header">
+  <div class="header-brand">
+    <div class="header-logo">鐭?/div>
+    <h1>鐭ヨ瘑闂瓟</h1>
+    <span class="header-badge">RAG + Wiki</span>
+  </div>
+  <div class="header-status">
+    <span class="status-dot"></span>
+    <span>鍦ㄧ嚎</span>
+  </div>
+</header>
+
+<div class="chat-container" id="chatContainer">
+  <div class="welcome" id="welcome">
+    <div class="welcome-icon">馃挕</div>
+    <h2>鏈変粈涔堝彲浠ュ府鍔╀綘鐨勶紵</h2>
+    <p>鍩轰簬鐭ヨ瘑搴撶殑鏅鸿兘闂瓟锛屾敮鎸?Wiki 鐩存煡銆丷AG 妫€绱㈠拰娴佹按绾挎ā寮?/p>
+    <div class="welcome-suggestions" id="suggestions"></div>
+  </div>
+</div>
+
+<div class="input-area">
+  <div class="mode-bar" id="modeBar">
+    <button class="mode-btn active" data-mode="auto">鏅鸿兘</button>
+    <button class="mode-btn" data-mode="wiki">Wiki</button>
+    <button class="mode-btn" data-mode="rag">RAG</button>
+    <button class="mode-btn" data-mode="pipeline">娴佹按绾?/button>
+  </div>
+  <div class="input-wrapper">
+    <input
+      type="text"
+      class="input-field"
+      id="questionInput"
+      placeholder="杈撳叆闂锛孍nter 鍙戦€佲€?
+      autofocus
+    >
+    <div class="kbd-hint">
+      <span class="kbd">Enter</span> 鍙戦€?
+    </div>
+  </div>
+  <button class="send-btn" id="sendBtn" onclick="sendQuestion()" aria-label="鍙戦€佹秷鎭?>
+    <svg viewBox="0 0 24 24">
+      <path d="M22 2L11 13"/>
+      <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+    </svg>
+  </button>
+</div>
+
+<script>
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+   CHAT LOGIC
+   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+const chatContainer = document.getElementById('chatContainer');
+const questionInput = document.getElementById('questionInput');
+const sendBtn = document.getElementById('sendBtn');
+const welcome = document.getElementById('welcome');
+
+// Welcome suggestions
+const suggestionList = [
+  '鍏徃浠婂勾鐨勮皟钖绠楁槸澶氬皯锛?,
+  '璇曠敤鏈熷憳宸ユ湁鍝簺鏉冪泭锛?,
+  '鏈€杩戝彂甯冧簡鍝簺浜у搧锛?,
+  '浜轰簨绠＄悊鍒跺害鏈夊摢浜涙洿鏂帮紵',
+];
+const suggestionsEl = document.getElementById('suggestions');
+suggestionList.forEach(text => {
+  const btn = document.createElement('button');
+  btn.className = 'welcome-suggestion';
+  btn.textContent = text;
+  btn.addEventListener('click', () => {
+    questionInput.value = text;
+    questionInput.focus();
+    sendQuestion();
+  });
+  suggestionsEl.appendChild(btn);
+});
+
+questionInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendQuestion();
+  }
+});
+
+let messageCounter = 0;
+
+function addMessage(text, role, extra = {}) {
+  welcome.style.display = 'none';
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+
+  // Stagger: 50ms between consecutive messages (keep total under 800ms)
+  div.style.animationDelay = `${messageCounter * 50}ms`;
+  messageCounter++;
+
+  if (role === 'bot') {
+    // Detect HTML-formatted answers from RAG engine
+    let html;
+    const isRagHtml = text.trim().startsWith('<div class="rag-answer">');
+    if (isRagHtml) {
+      html = text;  // Render HTML directly from RAG
+    } else {
+      html = escapeHtml(text).replace(/\n/g, '<br>');
+    }
+    // Skip source/confidence for RAG HTML (already embedded in the answer)
+    if (!isRagHtml) {
+      if (extra.source) {
+        html += `<div class="source-tag"><span>鈼?/span> ${escapeHtml(extra.source)}</div>`;
+      }
+      if (extra.confidence) {
+        html += `<div class="confidence">缃俊搴? ${escapeHtml(extra.confidence)}</div>`;
+      }
+    }
+    const pq = extra.parsed_question || '';
+    const pc = extra.pages_consulted || [];
+    if (pq || pc.length > 0) {
+      const parts = [];
+      if (pq) parts.push(`馃搵 闂瑙ｆ瀽: ${escapeHtml(pq)}`);
+      if (pc.length > 0) parts.push(`鏌ラ槄椤甸潰: ${escapeHtml(pc.join(', '))}`);
+      html += `<div class="query-detail">${parts.join(' | ')}</div>`;
+    }
+    div.innerHTML = html;
+  } else {
+    div.textContent = text;
+  }
+
+  chatContainer.appendChild(div);
+  scrollToBottom();
+}
+
+function showTyping() {
+  welcome.style.display = 'none';
+  const div = document.createElement('div');
+  div.className = 'typing-indicator';
+  div.id = 'typingIndicator';
+  div.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  chatContainer.appendChild(div);
+  scrollToBottom();
+}
+
+function hideTyping() {
+  const el = document.getElementById('typingIndicator');
+  if (el) {
+    el.style.transition = 'opacity 120ms ease-out';
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 120);
+  }
+}
+
+function scrollToBottom() {
+  chatContainer.scrollTo({
+    top: chatContainer.scrollHeight,
+    behavior: 'smooth'
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Mode selector (module level)
+const modeBar = document.getElementById('modeBar');
+let currentMode = 'auto';
+modeBar.addEventListener('click', e => {
+  const btn = e.target.closest('.mode-btn');
+  if (!btn) return;
+  modeBar.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentMode = btn.dataset.mode;
+});
+
+async function sendQuestion() {
+  const question = questionInput.value.trim();
+  if (!question) return;
+
+  addMessage(question, 'user');
+  questionInput.value = '';
+  sendBtn.disabled = true;
+  messageCounter = 0;
+  showTyping();
+
+  try {
+    const res = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, mode: currentMode, top_k: 5 })
+    });
+
+    hideTyping();
+
+    if (!res.ok) {
+      const errText = await res.text();
+      addMessage(`璇锋眰澶辫触 (${res.status}): ${errText}`, 'error-msg');
+      sendBtn.disabled = false;
+      return;
+    }
+
+    const data = await res.json();
+    addMessage(data.answer, 'bot', {
+      source: data.source || 'unknown',
+      confidence: data.confidence || 'medium',
+      parsed_question: data.parsed_question || '',
+      pages_consulted: data.pages_consulted || []
+    });
+
+  } catch (err) {
+    hideTyping();
+    addMessage(`缃戠粶閿欒: ${err.message}`, 'error-msg');
+  }
+
+  sendBtn.disabled = false;
+  questionInput.focus();
+}
+</script>
+</body>
+</html>
+
+
+================================================================================
+ 文件: backend\requirements.txt  (0.5KB)
+================================================================================
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+pydantic==2.9.0
+pydantic-settings==2.5.0
+
+# Ollama
+ollama==0.3.0
+
+# OpenAI（可选）
+openai==1.50.0
+
+# LangChain (只保留 text-splitters 用于切片)
+langchain-text-splitters==0.3.0
+
+# Embedding
+sentence-transformers==3.1.0
+
+# Chroma 向量库
+chromadb==0.5.0
+
+# 文档解析
+pypdf==5.0.0
+python-docx==1.1.0
+markdown==3.7
+
+# 工具
+python-dotenv==1.0.0
+aiofiles==24.1.0
+
+# 轻量 PDF（替代 langchain PyPDFLoader）
+pymupdf==1.24.0
+
+
+================================================================================
+ 文件: Dockerfile  (0.2KB)
+================================================================================
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["python", "main.py"]
+
+
+================================================================================
+ 文件: docker-compose.yml  (0.4KB)
+================================================================================
+
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./wiki-data:/app/wiki-data
+      - ./backend/chroma_db:/app/chroma_db
+      - ./backend/logs:/app/logs
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+
+================================================================================
+ 文件: README.md  (2.7KB)
+================================================================================
+
+# Wiki-RAG 双引擎企业知识问答系统
+
+> 基于 Karpathy LLM Wiki 范式 + RAG 的企业级知识管理解决方案
+
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+
+---
+
+## 核心理念
+
+**不是又一个 RAG Chatbot。**
+
+现有的 RAG 问答系统只能「检索 → 回答」，答案随对话消失，同样的
+问题被反复搜索。本系统实现了 **Wiki + RAG 双引擎架构**：
+
+- **Wiki 引擎**：将高质量答案结构化沉淀，知识越用越厚
+- **RAG 引擎**：兜底检索未结构化的原始文档
+- **知识复利**：RAG 产生的优质答案自动回流 Wiki，相同问题不查两遍
+
+```
+用户提问 → 先查 Wiki（精确命中） → 未命中 → RAG 兜底 → 好答案写回 Wiki
+```
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.10+
+- [Ollama](https://ollama.com)（本地 LLM 推理）
+- 16GB+ RAM（笔记本开发）
+- 8GB+ VRAM（台式机跑模型，可选）
+
+### 1. 克隆项目
+
+```bash
+git clone <your-repo-url>
+cd CodeXFiles
+```
+
+### 2. 安装依赖
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+### 3. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env，配置 LLM Provider 和台式机 IP
+```
+
+### 4. 启动 Ollama（台式机）
+
+```bash
+# 在台式机上
+ollama serve
+ollama pull qwen2.5:7b
+```
+
+### 5. 启动后端
+
+```bash
+cd backend
+python main.py
+# 访问 http://localhost:8000/docs 查看 API 文档
+```
+
+---
+
+## 技术栈
+
+| 模块 | 技术 |
+|------|------|
+| 后端 | FastAPI + Python 3.10+ |
+| LLM | Ollama Qwen2.5-7B（可切换 OpenAI/智谱） |
+| Embedding | BGE-small-zh |
+| 向量库 | Chroma |
+| 文档解析 | LangChain Loaders |
+| Wiki 格式 | Markdown + Git |
+
+---
+
+## 项目结构
+
+详见 [docs/architecture.md](docs/architecture.md)
+
+---
+
+## API 文档
+
+启动后访问 `http://localhost:8000/docs` 查看 Swagger 文档。
+
+主要接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/ingest` | 上传文档 |
+| POST | `/api/query` | 知识问答 |
+| GET | `/api/wiki/index` | Wiki 目录 |
+| POST | `/api/wiki/lint` | 健康检查 |
+
+---
+
+## 创新点
+
+1. **Wiki + RAG 双引擎**：结构化精确检索 + 非结构化语义兜底
+2. **知识复利机制**：每次回答都在沉淀，越用越聪明
+3. **LLM 驱动的 Wiki 维护**：自动交叉引用、矛盾检测、过期标记
+4. **Karpathy 范式工程化落地**：从概念到可运行的企业级系统
+
+---
+
+## License
+
+MIT
+
+
+================================================================================
+ 文件: .gitignore  (0.7KB)
+================================================================================
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 鐜鍙橀噺锛堝惈 API Key锛?
+.env
+.env.*
+
+# 鍚戦噺鏁版嵁搴擄紙鍙噸寤猴級
+chroma_db/
+
+# 鏈湴妯″瀷鏉冮噸
+.models/
+
+# 鏃ュ織
+*.log
+logs/
+_stdout.log
+_stderr.log
+_error.log
+
+# 涓存椂鏂囦欢
+.tmp/
+nul
+
+# AI 宸ュ叿娈嬬暀
+.arts/
+.claude/
+.codeartsdoer/
+
+# 娴嬭瘯褰掓。
+tests/archive/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Server runtime
+server.pid
+
+# Wiki data 鈥?涓氬姟鏁版嵁锛屽畬鍏ㄦ帓闄?wiki-data/
+wiki-data/raw/
+wiki-data/wiki/
+wiki-data/backlinks.json
+wiki-data/tags.json
+wiki-data/assets/
+
+# Docker volumes
+data/
+
+
+================================================================================
+ 文件: .dockerignore  (0.1KB)
+================================================================================
+
+__pycache__
+*.pyc
+.git
+.env
+chroma_db
+logs
+wiki-data
+
