@@ -38,6 +38,6 @@ services:
       - key: DINGTALK_UNION_ID
         sync: false
       - key: DINGTALK_DRIVE_PROXY_URL
-        sync: false
+        value: http://203.104.35.193:3002
       - key: DINGTALK_DRIVE_USER_ID
-        sync: false
+        value: "17772548496152445"
