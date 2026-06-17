@@ -117,17 +117,32 @@ class TestDingTalkDriveService:
     def test_init(self):
         from services.dingtalk_drive_service import DingTalkDriveService
         svc = DingTalkDriveService()
-        assert svc._access_token is None
+        assert svc._proxy_base is None
 
-    def test_get_access_token_no_credentials(self):
+    def test_proxy_url_empty(self):
         from services.dingtalk_drive_service import DingTalkDriveService
         from core.config import settings
-
-        settings.dingtalk_client_id = ""
-        settings.dingtalk_client_secret = ""
+        settings.dingtalk_drive_proxy_url = ""
         svc = DingTalkDriveService()
-        token = svc._get_access_token()
-        assert token == ""
+        assert svc.proxy_base == ""
+
+    def test_list_no_proxy(self):
+        from services.dingtalk_drive_service import DingTalkDriveService
+        from core.config import settings
+        settings.dingtalk_drive_proxy_url = ""
+        settings.dingtalk_drive_user_id = ""
+        svc = DingTalkDriveService()
+        result = svc.list_folder_files("229780993", "0")
+        assert result == []
+
+    def test_download_no_proxy(self):
+        from services.dingtalk_drive_service import DingTalkDriveService
+        from core.config import settings
+        settings.dingtalk_drive_proxy_url = ""
+        settings.dingtalk_drive_user_id = ""
+        svc = DingTalkDriveService()
+        result = svc.download_file_content("229780993", "123", "test.txt")
+        assert result is None
 
 
 class TestKnowledgeExtractService:

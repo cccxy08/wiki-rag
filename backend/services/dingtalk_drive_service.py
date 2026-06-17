@@ -1,6 +1,7 @@
-"""钉钉云盘文件同步服务"""
+"""钉钉云盘文件同步服务 — 通过代理服务访问钉盘API"""
 from __future__ import annotations
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -12,42 +13,26 @@ logger = logging.getLogger(__name__)
 
 class DingTalkDriveService:
     def __init__(self):
-        self._access_token = None
-        self._token_expires_at = 0.0
+        self._proxy_base = None
 
-    def _get_access_token(self) -> str:
-        if self._access_token and __import__('time').time() < self._token_expires_at:
-            return self._access_token
+    @property
+    def proxy_base(self) -> str:
+        if self._proxy_base:
+            return self._proxy_base
+        if settings.dingtalk_drive_proxy_url:
+            self._proxy_base = settings.dingtalk_drive_proxy_url.rstrip("/")
+        else:
+            self._proxy_base = ""
+        return self._proxy_base
 
-        if not settings.dingtalk_client_id or not settings.dingtalk_client_secret:
-            logger.warning("DingTalk credentials not configured")
-            return ""
+    def list_folder_files(self, space_id: str, folder_id: str, recursive: bool = False, depth: int = 0) -> list[dict]:
+        if not self.proxy_base:
+            logger.error("DINGTALK_DRIVE_PROXY_URL not configured")
+            return []
 
-        try:
-            resp = httpx.post(
-                "https://oapi.dingtalk.com/gettoken",
-                params={
-                    "appkey": settings.dingtalk_client_id,
-                    "appsecret": settings.dingtalk_client_secret,
-                },
-                timeout=10,
-            )
-            data = resp.json()
-            if data.get("errcode") == 0:
-                self._access_token = data["access_token"]
-                self._token_expires_at = __import__('time').time() + data.get("expires_in", 7200) - 300
-                return self._access_token
-            else:
-                logger.error(f"DingTalk gettoken failed: {data}")
-                return ""
-        except Exception as e:
-            logger.error(f"DingTalk gettoken error: {e}")
-            return ""
-
-    def list_folder_files(self, space_id: str, folder_id: str) -> list[dict]:
-        """列出钉钉云盘指定文件夹下的文件"""
-        token = self._get_access_token()
-        if not token:
+        user_id = settings.dingtalk_drive_user_id
+        if not user_id:
+            logger.error("DINGTALK_DRIVE_USER_ID not configured")
             return []
 
         files = []
@@ -55,93 +40,173 @@ class DingTalkDriveService:
 
         while True:
             try:
-                body = {
-                    "parentId": folder_id,
-                    "maxResults": 50,
-                }
-                if next_token:
-                    body["nextToken"] = next_token
+                params = {"userId": user_id}
+                if folder_id:
+                    params["parentId"] = folder_id
 
-                resp = httpx.post(
-                    f"https://oapi.dingtalk.com/v1.0/drive/spaces/{space_id}/files/{folder_id}/children",
-                    headers={"x-acs-dingtalk-access-token": token},
-                    json=body,
+                resp = httpx.get(
+                    f"{self.proxy_base}/list",
+                    params=params,
                     timeout=30,
                 )
+                if resp.status_code != 200:
+                    logger.error(f"Drive list failed: {resp.status_code} {resp.text[:200]}")
+                    break
+
                 data = resp.json()
-                items = data.get("items", [])
+                if not data.get("ok"):
+                    logger.error(f"Drive list error: {data}")
+                    break
+
+                items = data.get("files", [])
                 for item in items:
-                    files.append({
-                        "file_id": item.get("id", ""),
-                        "name": item.get("name", ""),
-                        "type": item.get("type", ""),
-                        "size": item.get("size", 0),
-                        "modified_time": item.get("modifiedTime", ""),
-                    })
+                    ftype = item.get("fileType", "file")
+                    entry = {
+                        "file_id": item.get("fileId", ""),
+                        "name": item.get("fileName", ""),
+                        "type": ftype,
+                        "extension": item.get("fileExtension", ""),
+                        "size": int(item.get("fileSize", 0) or 0),
+                        "modified_time": item.get("modifyTime", item.get("updatedAt", "")),
+                        "space_id": space_id,
+                    }
+                    files.append(entry)
+
+                    if recursive and ftype == "folder" and depth < 3:
+                        sub_files = self.list_folder_files(
+                            space_id, item["fileId"], recursive=True, depth=depth + 1
+                        )
+                        files.extend(sub_files)
 
                 next_token = data.get("nextToken")
                 if not next_token:
                     break
             except Exception as e:
-                logger.error(f"DingTalk list folder files error: {e}")
+                logger.error(f"Drive list error: {e}")
                 break
 
         return files
 
-    def download_file(self, space_id: str, file_id: str) -> Optional[bytes]:
-        """下载钉钉云盘文件"""
-        token = self._get_access_token()
-        if not token:
+    def download_file_content(self, space_id: str, file_id: str, file_name: str = "") -> Optional[bytes]:
+        if not self.proxy_base:
+            logger.error("DINGTALK_DRIVE_PROXY_URL not configured")
+            return None
+
+        user_id = settings.dingtalk_drive_user_id
+        if not user_id:
+            logger.error("DINGTALK_DRIVE_USER_ID not configured")
             return None
 
         try:
-            resp = httpx.post(
-                f"https://oapi.dingtalk.com/v1.0/drive/spaces/{space_id}/files/{file_id}/download",
-                headers={"x-acs-dingtalk-access-token": token},
-                json={},
+            resp = httpx.get(
+                f"{self.proxy_base}/download",
+                params={"userId": user_id, "fileId": file_id},
                 timeout=settings.dingtalk_file_download_timeout_seconds,
             )
             if resp.status_code == 200:
+                logger.info(f"Downloaded: {file_name or file_id} ({len(resp.content)} bytes)")
                 return resp.content
             else:
-                logger.error(f"DingTalk download file failed: status={resp.status_code}")
+                logger.error(f"Download failed: {resp.status_code} {resp.text[:200]}")
                 return None
         except Exception as e:
-            logger.error(f"DingTalk download file error: {e}")
+            logger.error(f"Download error: {e}")
             return None
 
-    def sync_folder(self, space_id: str, folder_id: str) -> dict:
-        """同步钉钉云盘文件夹到知识库"""
-        files = self.list_folder_files(space_id, folder_id)
+    def upload_file(self, space_id: str, file_name: str, content: bytes, parent_id: str = "") -> dict:
+        if not self.proxy_base:
+            return {"status": "error", "error": "proxy not configured"}
+
+        user_id = settings.dingtalk_drive_user_id
+        if not user_id:
+            return {"status": "error", "error": "user_id not configured"}
+
+        try:
+            params = {"userId": user_id}
+            if parent_id:
+                params["parentId"] = parent_id
+
+            resp = httpx.post(
+                f"{self.proxy_base}/upload",
+                params=params,
+                files={"files": (file_name, content)},
+                timeout=60,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok"):
+                    return {"status": "success", "file_id": data.get("fileId", "")}
+                return {"status": "error", "error": data.get("message", "upload failed")}
+            return {"status": "error", "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:200]}
+
+    def check_health(self) -> dict:
+        if not self.proxy_base:
+            return {"healthy": False, "error": "proxy not configured"}
+        try:
+            resp = httpx.get(f"{self.proxy_base}/health", timeout=10)
+            if resp.status_code == 200:
+                return {"healthy": True, "status": resp.text[:100]}
+            return {"healthy": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"healthy": False, "error": str(e)[:200]}
+
+    def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True) -> dict:
+        files = self.list_folder_files(space_id, folder_id, recursive=recursive)
         if not files:
             logger.info("No files found in DingTalk drive folder")
-            return {"synced_count": 0, "errors": []}
+            return {"synced_count": 0, "errors": [], "total_files": 0}
+
+        supported_exts = {
+            ext.strip().lstrip(".")
+            for ext in settings.supported_file_types.split(",")
+            if ext.strip()
+        }
 
         synced_count = 0
+        skipped_count = 0
         errors = []
 
         from services.ingest_service import IngestService
         ingest = IngestService()
 
         for file_info in files:
-            file_name = file_info["name"]
-            file_type = file_info.get("type", "")
-            if file_type == "folder":
+            if file_info["type"] != "file":
                 continue
 
-            content = self.download_file(space_id, file_info["file_id"])
+            ext = file_info.get("extension", "").lower()
+            name = file_info.get("name", "")
+            if supported_exts and ext not in supported_exts and ext:
+                skipped_count += 1
+                logger.debug(f"Skipping unsupported: {name}")
+                continue
+
+            file_id = file_info.get("file_id", "")
+            content = self.download_file_content(space_id, file_id, name)
             if not content:
-                errors.append({"file": file_name, "error": "download failed"})
+                errors.append({"file": name, "error": "download failed"})
                 continue
 
             try:
-                result = ingest.ingest_file(content, file_name)
+                result = ingest.ingest_file(content, name)
                 if result.get("status") in ("success", "completed"):
                     synced_count += 1
+                    logger.info(f"Synced: {name}")
                 else:
-                    errors.append({"file": file_name, "error": result.get("error", "ingest failed")})
+                    errors.append({
+                        "file": name,
+                        "error": result.get("error", "ingest failed"),
+                    })
             except Exception as e:
-                errors.append({"file": file_name, "error": str(e)[:200]})
+                errors.append({"file": name, "error": str(e)[:200]})
 
-        logger.info(f"DingTalk drive sync complete: {synced_count} files, {len(errors)} errors")
-        return {"synced_count": synced_count, "errors": errors}
+        logger.info(
+            f"DingTalk drive sync: {synced_count} synced, {skipped_count} skipped, {len(errors)} errors"
+        )
+        return {
+            "synced_count": synced_count,
+            "skipped_count": skipped_count,
+            "errors": errors,
+            "total_files": len([f for f in files if f["type"] == "file"]),
+        }

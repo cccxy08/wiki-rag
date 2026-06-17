@@ -35,3 +35,9 @@ services:
         sync: false
       - key: DINGTALK_DRIVE_FOLDER_ID
         sync: false
+      - key: DINGTALK_UNION_ID
+        sync: false
+      - key: DINGTALK_DRIVE_PROXY_URL
+        sync: false
+      - key: DINGTALK_DRIVE_USER_ID
+        sync: false

@@ -33,23 +33,24 @@ class DingTalkBotService:
 
         try:
             resp = httpx.post(
-                "https://oapi.dingtalk.com/gettoken",
-                params={
-                    "appkey": settings.dingtalk_client_id,
-                    "appsecret": settings.dingtalk_client_secret,
+                "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                json={
+                    "appKey": settings.dingtalk_client_id,
+                    "appSecret": settings.dingtalk_client_secret,
                 },
                 timeout=10,
             )
             data = resp.json()
-            if data.get("errcode") == 0:
-                self._access_token = data["access_token"]
-                self._token_expires_at = time.time() + data.get("expires_in", 7200) - 300
+            if data.get("accessToken"):
+                self._access_token = data["accessToken"]
+                expire_in = data.get("expireIn", 7200)
+                self._token_expires_at = time.time() + expire_in - 300
                 return self._access_token
             else:
-                logger.error(f"DingTalk gettoken failed: {data}")
+                logger.error(f"DingTalk getAccessToken failed: {data}")
                 return ""
         except Exception as e:
-            logger.error(f"DingTalk gettoken error: {e}")
+            logger.error(f"DingTalk getAccessToken error: {e}")
             return ""
 
     def start_stream(self):
@@ -122,7 +123,7 @@ class DingTalkBotService:
 
         try:
             resp = httpx.post(
-                f"https://oapi.dingtalk.com/v1.0/robot/oToMessage/batchSend",
+                "https://api.dingtalk.com/v1.0/robot/oToMessage/batchSend",
                 headers={"x-acs-dingtalk-access-token": token},
                 json={
                     "robotCode": settings.dingtalk_robot_code,
@@ -158,7 +159,7 @@ class DingTalkBotService:
 
         try:
             resp = httpx.post(
-                "https://oapi.dingtalk.com/v1.0/file/download",
+                "https://api.dingtalk.com/v1.0/file/download",
                 headers={"x-acs-dingtalk-access-token": token},
                 json={"downloadCode": download_code},
                 timeout=settings.dingtalk_file_download_timeout_seconds,

@@ -2407,6 +2407,24 @@ function _addDriveHints() {
   const hintStyle = 'style="font-size:11px;color:#888;margin-top:2px;line-height:1.4;"';
   spaceRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>打开钉钉云盘 → URL中 spaceId= 后的数字</div>`);
   folderRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>打开钉钉云盘文件夹 → URL中 folderId= 后的数字</div>`);
+
+  const unionInput = document.querySelector('input[data-field="dingtalk_union_id"]');
+  if (unionInput) {
+    const unionRow = unionInput.closest('.setting-row');
+    unionRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>用于企业空间Storage API鉴权；留空则自动从通讯录获取</div>`);
+  }
+
+  const proxyInput = document.querySelector('input[data-field="dingtalk_drive_proxy_url"]');
+  if (proxyInput) {
+    const proxyRow = proxyInput.closest('.setting-row');
+    proxyRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>钉盘代理服务地址，如 http://203.104.35.193:3002</div>`);
+  }
+
+  const duserIdInput = document.querySelector('input[data-field="dingtalk_drive_user_id"]');
+  if (duserIdInput) {
+    const duserIdRow = duserIdInput.closest('.setting-row');
+    duserIdRow.insertAdjacentHTML('beforeend', `<div ${hintStyle}>代理服务用的钉钉userId，如 17772548496152445</div>`);
+  }
 }
 
 function formatSettingLabel(key) {
@@ -2437,6 +2455,9 @@ function formatSettingLabel(key) {
     dingtalk_client_secret: 'Client Secret',
     dingtalk_drive_space_id: '云盘 Space ID', dingtalk_drive_folder_id: '云盘 Folder ID',
     dingtalk_drive_sync_interval_hours: '云盘同步间隔(小时)',
+    dingtalk_union_id: '钉钉 UnionId',
+    dingtalk_drive_proxy_url: '云盘代理服务地址',
+    dingtalk_drive_user_id: '云盘代理用户ID',
     knowledge_extract_interval_hours: '知识提取间隔(小时)', knowledge_extract_max_conversations: '最大对话数',
     watcher_allowed_dirs: '允许目录', watcher_stable_wait_seconds: '稳定等待(秒)',
     watcher_health_check_interval_seconds: '健康检查间隔(秒)',
