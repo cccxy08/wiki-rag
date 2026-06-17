@@ -148,9 +148,6 @@ async def sync_drive():
 
 @router.get("/drive/list")
 async def drive_list(parent_id: str = ""):
-    """浏览钉盘文件夹列表（用于admin后台文件夹选择器）"""
-    if not settings.dingtalk_enabled:
-        raise HTTPException(status_code=404, detail="DingTalk not enabled")
     if not settings.dingtalk_drive_proxy_url:
         raise HTTPException(status_code=400, detail="DINGTALK_DRIVE_PROXY_URL not configured")
 
@@ -166,9 +163,8 @@ async def drive_list(parent_id: str = ""):
 
 @router.get("/drive-health")
 async def drive_health():
-    """检查钉盘代理服务健康状态"""
-    if not settings.dingtalk_enabled:
-        raise HTTPException(status_code=404, detail="DingTalk not enabled")
+    if not settings.dingtalk_drive_proxy_url:
+        return {"healthy": False, "error": "proxy not configured"}
 
     try:
         from services.dingtalk_drive_service import DingTalkDriveService
