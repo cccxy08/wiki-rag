@@ -267,14 +267,49 @@ class MiniMaxProvider(LLMProvider):
 
     def __init__(self):
         super().__init__()
+        self._client = None
+        self._text_model = settings.minimax_model
+        self._vl_model = settings.minimax_multimodal_model
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return
         if not settings.minimax_api_key:
             raise ValueError("MINIMAX_API_KEY 未设置")
         self._client = OpenAI(
             base_url=settings.minimax_base_url,
             api_key=settings.minimax_api_key
         )
-        self._text_model = settings.minimax_model
-        self._vl_model = settings.minimax_multimodal_model
+
+    def _raw_chat(self, messages: list[dict], stream: bool = False, label: str = "") -> str:
+        self._ensure_client()
+        model = self._choose_model(messages)
+        if settings.debug:
+            import sys
+            print(f"[LLM-DEBUG] MiniMax: base_url={settings.minimax_base_url} model={model}", file=sys.stderr)
+        response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=stream,
+            temperature=0.3,
+        )
+        if response.usage:
+            prefix = f"[LLM] {label}" if label else "[LLM]"
+            print(f"{prefix} model={model} prompt={response.usage.prompt_tokens} completion={response.usage.completion_tokens} total={response.usage.total_tokens}")
+        return response.choices[0].message.content or ""
+
+    def _raw_chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
+        self._ensure_client()
+        model = self._choose_model(messages)
+        response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
     @property
     def model_name(self) -> str:

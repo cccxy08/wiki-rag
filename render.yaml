@@ -24,7 +24,7 @@ services:
       - key: PORT
         value: "10000"
       - key: MINIMAX_API_KEY
-        sync: false
+        value: sk-cp-1Lao29cuXpD8O0do4tz1CJyuObwjdeOy9cgeGOJnYa-IRlk_AxVHPRUuSzNCapr0uOKXWhiVm8moOvBmQbhExr9hjPFydDNC1FFULo1DdLw1CFckQMcIeO4
       - key: ZHIPU_API_KEY
         sync: false
       - key: DINGTALK_ENABLED
