@@ -57,7 +57,7 @@ SETTINGS_GROUPS = [
     {
         "key": "dingtalk",
         "label": "钉钉机器人",
-        "fields": ["dingtalk_enabled", "dingtalk_client_id", "dingtalk_client_secret", "dingtalk_robot_code", "dingtalk_mode", "dingtalk_admin_ids", "dingtalk_admin_group_webhook", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds", "dingtalk_drive_proxy_url", "dingtalk_drive_user_id", "dingtalk_drive_space_id", "dingtalk_drive_folder_id", "dingtalk_drive_sync_interval_hours", "dingtalk_union_id", "knowledge_extract_interval_hours", "knowledge_extract_max_conversations"],
+        "fields": ["dingtalk_enabled", "dingtalk_client_id", "dingtalk_client_secret", "dingtalk_robot_code", "dingtalk_mode", "dingtalk_admin_ids", "dingtalk_admin_group_webhook", "dingtalk_message_timeout_seconds", "dingtalk_file_download_timeout_seconds", "dingtalk_stream_reconnect_max_interval_seconds", "dingtalk_drive_proxy_url", "dingtalk_drive_proxy_token", "dingtalk_drive_user_id", "dingtalk_drive_space_id", "dingtalk_drive_folder_id", "dingtalk_drive_sync_interval_hours", "dingtalk_union_id", "knowledge_extract_interval_hours", "knowledge_extract_max_conversations"],
     },
     {
         "key": "watcher",

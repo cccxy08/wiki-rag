@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     dingtalk_drive_sync_interval_hours: int = 72
     dingtalk_union_id: str = ""
     dingtalk_drive_proxy_url: str = ""
+    dingtalk_drive_proxy_token: str = ""
     dingtalk_drive_user_id: str = ""
 
     # ===== 知识提取配置 =====

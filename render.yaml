@@ -38,6 +38,8 @@ services:
       - key: DINGTALK_UNION_ID
         sync: false
       - key: DINGTALK_DRIVE_PROXY_URL
-        value: http://203.104.35.193:3002
+        value: http://203.104.35.193/dingdrive
+      - key: DINGTALK_DRIVE_PROXY_TOKEN
+        value: dingdrive-proxy-2026
       - key: DINGTALK_DRIVE_USER_ID
-        value: "17772548496152445"
+        value: "1"

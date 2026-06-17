@@ -123,6 +123,7 @@ class TestDingTalkDriveService:
         from services.dingtalk_drive_service import DingTalkDriveService
         from core.config import settings
         settings.dingtalk_drive_proxy_url = ""
+        settings.dingtalk_drive_proxy_token = ""
         svc = DingTalkDriveService()
         assert svc.proxy_base == ""
 
@@ -130,6 +131,7 @@ class TestDingTalkDriveService:
         from services.dingtalk_drive_service import DingTalkDriveService
         from core.config import settings
         settings.dingtalk_drive_proxy_url = ""
+        settings.dingtalk_drive_proxy_token = ""
         settings.dingtalk_drive_user_id = ""
         svc = DingTalkDriveService()
         result = svc.list_folder_files("229780993", "0")
@@ -139,6 +141,7 @@ class TestDingTalkDriveService:
         from services.dingtalk_drive_service import DingTalkDriveService
         from core.config import settings
         settings.dingtalk_drive_proxy_url = ""
+        settings.dingtalk_drive_proxy_token = ""
         settings.dingtalk_drive_user_id = ""
         svc = DingTalkDriveService()
         result = svc.download_file_content("229780993", "123", "test.txt")

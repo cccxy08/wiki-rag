@@ -25,6 +25,19 @@ class DingTalkDriveService:
             self._proxy_base = ""
         return self._proxy_base
 
+    @property
+    def proxy_token(self) -> str:
+        return settings.dingtalk_drive_proxy_token
+
+    def _base_params(self) -> dict:
+        params = {}
+        if self.proxy_token:
+            params["token"] = self.proxy_token
+        user_id = settings.dingtalk_drive_user_id
+        if user_id:
+            params["userId"] = user_id
+        return params
+
     def list_folder_files(self, space_id: str, folder_id: str, recursive: bool = False, depth: int = 0) -> list[dict]:
         if not self.proxy_base:
             logger.error("DINGTALK_DRIVE_PROXY_URL not configured")
@@ -40,7 +53,7 @@ class DingTalkDriveService:
 
         while True:
             try:
-                params = {"userId": user_id}
+                params = self._base_params()
                 if folder_id:
                     params["parentId"] = folder_id
 
@@ -98,9 +111,11 @@ class DingTalkDriveService:
             return None
 
         try:
+            params = self._base_params()
+            params["fileId"] = file_id
             resp = httpx.get(
                 f"{self.proxy_base}/download",
-                params={"userId": user_id, "fileId": file_id},
+                params=params,
                 timeout=settings.dingtalk_file_download_timeout_seconds,
             )
             if resp.status_code == 200:
@@ -122,7 +137,7 @@ class DingTalkDriveService:
             return {"status": "error", "error": "user_id not configured"}
 
         try:
-            params = {"userId": user_id}
+            params = self._base_params()
             if parent_id:
                 params["parentId"] = parent_id
 
@@ -153,7 +168,6 @@ class DingTalkDriveService:
             return {"healthy": False, "error": str(e)[:200]}
 
     def browse_folder(self, parent_id: str = "") -> dict:
-        """浏览钉盘文件夹（供admin后台文件夹选择器用），返回文件夹和文件分开的列表"""
         if not self.proxy_base:
             return {"folders": [], "files": []}
 
@@ -162,7 +176,7 @@ class DingTalkDriveService:
             return {"folders": [], "files": []}
 
         try:
-            params = {"userId": user_id}
+            params = self._base_params()
             if parent_id:
                 params["parentId"] = parent_id
 
