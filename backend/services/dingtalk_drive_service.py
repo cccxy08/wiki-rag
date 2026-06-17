@@ -152,7 +152,76 @@ class DingTalkDriveService:
         except Exception as e:
             return {"healthy": False, "error": str(e)[:200]}
 
+    def browse_folder(self, parent_id: str = "") -> dict:
+        """浏览钉盘文件夹（供admin后台文件夹选择器用），返回文件夹和文件分开的列表"""
+        if not self.proxy_base:
+            return {"folders": [], "files": []}
+
+        user_id = settings.dingtalk_drive_user_id
+        if not user_id:
+            return {"folders": [], "files": []}
+
+        try:
+            params = {"userId": user_id}
+            if parent_id:
+                params["parentId"] = parent_id
+
+            resp = httpx.get(
+                f"{self.proxy_base}/list",
+                params=params,
+                timeout=30,
+            )
+            if resp.status_code != 200:
+                return {"folders": [], "files": [], "error": f"HTTP {resp.status_code}"}
+
+            data = resp.json()
+            if not data.get("ok"):
+                return {"folders": [], "files": [], "error": data.get("message", "unknown")}
+
+            folders = []
+            files = []
+            for item in data.get("files", []):
+                entry = {
+                    "fileId": item.get("fileId", ""),
+                    "fileName": item.get("fileName", ""),
+                    "fileType": item.get("fileType", "file"),
+                    "fileSize": int(item.get("fileSize", 0) or 0),
+                    "modifyTime": item.get("modifyTime", ""),
+                    "fileExtension": item.get("fileExtension", ""),
+                }
+                if entry["fileType"] == "folder":
+                    folders.append(entry)
+                else:
+                    files.append(entry)
+
+            return {"folders": folders, "files": files}
+        except Exception as e:
+            return {"folders": [], "files": [], "error": str(e)[:200]}
+
     def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True) -> dict:
+        # 支持多文件夹：folder_id可以是逗号分隔的多个ID
+        folder_ids = [fid.strip() for fid in folder_id.split(",") if fid.strip()] if folder_id else [""]
+
+        total_synced = 0
+        total_skipped = 0
+        all_errors = []
+        total_files = 0
+
+        for fid in folder_ids:
+            result = self._sync_single_folder(space_id, fid, recursive)
+            total_synced += result.get("synced_count", 0)
+            total_skipped += result.get("skipped_count", 0)
+            all_errors.extend(result.get("errors", []))
+            total_files += result.get("total_files", 0)
+
+        return {
+            "synced_count": total_synced,
+            "skipped_count": total_skipped,
+            "errors": all_errors,
+            "total_files": total_files,
+        }
+
+    def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True) -> dict:
         files = self.list_folder_files(space_id, folder_id, recursive=recursive)
         if not files:
             logger.info("No files found in DingTalk drive folder")
