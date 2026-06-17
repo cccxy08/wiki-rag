@@ -11,6 +11,12 @@ WIKI_DIR = Path(settings.wiki_pages_dir)
 EXCLUDE = {"index.md", "log.md"}
 
 def main():
+    provider = settings.llm_provider
+    api_key = getattr(settings, f"{provider}_api_key", None)
+    if not api_key:
+        print(f"⚠️ {provider.upper()}_API_KEY 未配置，跳过索引重建")
+        return
+
     rag = RAGEngine()
     md_files = sorted(WIKI_DIR.glob("*.md"))
 
