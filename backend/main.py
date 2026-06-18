@@ -59,9 +59,12 @@ async def startup_event():
         bot.start_stream()
 
     if settings.dingtalk_drive_proxy_url and settings.dingtalk_drive_folder_id:
-        from services.drive_sync_scheduler import DriveSyncScheduler
-        DriveSyncScheduler.get_instance().start()
-        print("   Drive sync scheduler started")
+        try:
+            from services.drive_sync_scheduler import DriveSyncScheduler
+            DriveSyncScheduler.get_instance().start()
+            print("   Drive sync scheduler started")
+        except Exception as e:
+            print(f"   Drive sync scheduler failed: {e}")
 
     print(f"Wiki-RAG 系统启动中...")
     print(f"   LLM Provider: {settings.llm_provider}")

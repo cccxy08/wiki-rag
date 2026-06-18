@@ -22,7 +22,10 @@ class DriveSyncScheduler:
         return cls._instance
 
     def __init__(self):
-        self._state_path = Path(settings.chroma_persist_dir).parent / "drive_sync_state.json"
+        try:
+            self._state_path = Path(settings.chroma_persist_dir).parent / "drive_sync_state.json"
+        except Exception:
+            self._state_path = Path("./drive_sync_state.json")
         self._state = self._load_state()
         self._timer: Optional[threading.Timer] = None
         self._running = False
@@ -237,11 +240,11 @@ class DriveSyncScheduler:
         if next_sync:
             try:
                 next_dt = datetime.fromisoformat(next_sync)
-                delay = max(0, (next_dt - datetime.utcnow()).total_seconds())
+                delay = max(60, (next_dt - datetime.utcnow()).total_seconds())
             except Exception:
-                delay = 30
+                delay = 120
         else:
-            delay = 30
+            delay = 120
 
         self._schedule_after(delay)
         logger.info(f"Drive sync scheduler started, first sync in {delay:.0f}s")
