@@ -221,7 +221,7 @@ class DingTalkDriveService:
         except Exception as e:
             return {"folders": [], "files": [], "error": str(e)[:200]}
 
-    def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True, incremental: bool = False) -> dict:
+    def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True, incremental: bool = False, on_progress=None) -> dict:
         folder_ids = [fid.strip() for fid in folder_id.split(",") if fid.strip()] if folder_id else [""]
 
         scheduler = None
@@ -235,7 +235,7 @@ class DingTalkDriveService:
         total_files = 0
 
         for fid in folder_ids:
-            result = self._sync_single_folder(space_id, fid, recursive, scheduler)
+            result = self._sync_single_folder(space_id, fid, recursive, scheduler, on_progress)
             total_synced += result.get("synced_count", 0)
             total_skipped += result.get("skipped_count", 0)
             all_errors.extend(result.get("errors", []))
@@ -251,8 +251,16 @@ class DingTalkDriveService:
             "total_files": total_files,
         }
 
-    def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True, scheduler=None) -> dict:
+    def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True, scheduler=None, on_progress=None) -> dict:
+        if on_progress:
+            on_progress("listing", {})
+
         files = self.list_folder_files(space_id, folder_id, recursive=recursive)
+        file_items = [f for f in files if f["type"] == "file"]
+
+        if on_progress:
+            on_progress("listed", {"total_files": len(file_items)})
+
         if not files:
             logger.info("No files found in DingTalk drive folder")
             return {"synced_count": 0, "errors": [], "total_files": 0}
@@ -278,7 +286,8 @@ class DingTalkDriveService:
             name = file_info.get("name", "")
             if supported_exts and ext not in supported_exts and ext:
                 skipped_count += 1
-                logger.debug(f"Skipping unsupported: {name}")
+                if on_progress:
+                    on_progress("skipped", {"name": name, "size": file_info.get("size", 0)}, "不支持格式")
                 continue
 
             file_id = file_info.get("file_id", "")
@@ -286,13 +295,22 @@ class DingTalkDriveService:
 
             if scheduler and not scheduler.should_sync_file(file_id, modify_time):
                 skipped_count += 1
-                logger.debug(f"Skipping unchanged: {name}")
+                if on_progress:
+                    on_progress("skipped", {"name": name, "size": file_info.get("size", 0)}, "未修改")
                 continue
+
+            if on_progress:
+                on_progress("downloading", {"name": name, "size": file_info.get("size", 0)})
 
             content = self.download_file_content(space_id, file_id, name)
             if not content:
                 errors.append({"file": name, "error": "download failed"})
+                if on_progress:
+                    on_progress("error", {"name": name, "size": file_info.get("size", 0)}, "下载失败")
                 continue
+
+            if on_progress:
+                on_progress("downloaded", {"name": name, "size": len(content)})
 
             try:
                 result = ingest.ingest_file(content, name)
@@ -301,13 +319,17 @@ class DingTalkDriveService:
                     if scheduler:
                         scheduler.mark_file_synced(file_id, modify_time, name)
                     logger.info(f"Synced: {name}")
+                    if on_progress:
+                        on_progress("synced", {"name": name, "size": len(content)}, "", result)
                 else:
-                    errors.append({
-                        "file": name,
-                        "error": result.get("error", "ingest failed"),
-                    })
+                    ingest_error = result.get("rag_error") or result.get("wiki_error") or "ingest failed"
+                    errors.append({"file": name, "error": ingest_error})
+                    if on_progress:
+                        on_progress("error", {"name": name, "size": len(content)}, ingest_error[:100])
             except Exception as e:
                 errors.append({"file": name, "error": str(e)[:200]})
+                if on_progress:
+                    on_progress("error", {"name": name, "size": file_info.get("size", 0)}, str(e)[:100])
 
         logger.info(
             f"DingTalk drive sync: {synced_count} synced, {skipped_count} skipped, {len(errors)} errors"

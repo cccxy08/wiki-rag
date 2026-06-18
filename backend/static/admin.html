@@ -2471,6 +2471,23 @@ function _addDriveBrowser() {
             ▶ 立即同步
           </button>
         </div>
+        <div id="drive-progress-section" style="display:none;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <div style="flex:1;height:18px;background:#e8e8e8;border-radius:9px;overflow:hidden;position:relative;">
+              <div id="drive-progress-bar" style="height:100%;background:linear-gradient(90deg,#4285f4,#34a853);border-radius:9px;transition:width 0.3s;width:0%;"></div>
+              <span id="drive-progress-text" style="position:absolute;top:0;left:0;right:0;text-align:center;font-size:10px;line-height:18px;color:#333;font-weight:600;"></span>
+            </div>
+            <span id="drive-progress-phase" style="font-size:10px;color:#666;white-space:nowrap;"></span>
+          </div>
+          <div id="drive-progress-stats" style="font-size:10px;color:#888;margin-bottom:4px;"></div>
+        </div>
+        <div id="drive-file-list-section" style="display:none;margin-bottom:8px;max-height:180px;overflow-y:auto;border:1px solid #eee;border-radius:4px;">
+          <div id="drive-file-list" style="font-size:11px;"></div>
+        </div>
+        <div id="drive-log-section" style="display:none;margin-bottom:8px;">
+          <div style="font-size:10px;font-weight:600;color:#666;margin-bottom:2px;">实时日志</div>
+          <div id="drive-log" style="max-height:120px;overflow-y:auto;border:1px solid #eee;border-radius:4px;padding:4px 6px;font-family:monospace;font-size:10px;line-height:1.5;background:#fafafa;"></div>
+        </div>
         <div id="drive-sync-status" style="font-size:11px;color:#888;line-height:1.6;">
           加载中...
         </div>
@@ -2485,6 +2502,7 @@ function _addDriveBrowser() {
     _renderMonitorSelected();
   }
   _loadDriveSyncStatus();
+  _connectDriveSSE();
 }
 
 let _driveSelectedFolders = new Set();
@@ -2627,6 +2645,9 @@ function _saveDriveMonitor() {
 }
 
 let _driveSyncTimer = null;
+let _driveSSE = null;
+let _driveSSEFailed = false;
+let _driveLastLogLen = 0;
 
 function _formatCountdown(seconds) {
   if (seconds <= 0) return '即将开始';
@@ -2651,7 +2672,151 @@ function _formatDateTime(isoStr) {
   } catch(e) { return isoStr; }
 }
 
+function _formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '';
+  if (bytes >= 1024*1024) return (bytes/1024/1024).toFixed(1) + 'MB';
+  if (bytes >= 1024) return (bytes/1024).toFixed(0) + 'KB';
+  return bytes + 'B';
+}
+
+const _phaseLabels = {
+  idle: '空闲', listing: '列出文件...', downloading: '下载中', ingesting: '消化中',
+  syncing: '同步中', complete: '已完成', error: '出错'
+};
+
+function _updateProgressUI(progress) {
+  const isSyncing = progress.is_syncing || progress.phase === 'downloading' || progress.phase === 'ingesting' || progress.phase === 'listing' || progress.phase === 'syncing';
+  const progSection = document.getElementById('drive-progress-section');
+  const fileListSection = document.getElementById('drive-file-list-section');
+  const logSection = document.getElementById('drive-log-section');
+  if (!progSection) return;
+
+  if (isSyncing || progress.phase === 'complete' || progress.phase === 'error') {
+    progSection.style.display = '';
+    fileListSection.style.display = '';
+    logSection.style.display = '';
+  } else {
+    progSection.style.display = 'none';
+    fileListSection.style.display = 'none';
+    logSection.style.display = 'none';
+    return;
+  }
+
+  const bar = document.getElementById('drive-progress-bar');
+  const text = document.getElementById('drive-progress-text');
+  const phase = document.getElementById('drive-progress-phase');
+  const stats = document.getElementById('drive-progress-stats');
+  const fileList = document.getElementById('drive-file-list');
+  const logEl = document.getElementById('drive-log');
+
+  const pct = progress.progress_pct || 0;
+  bar.style.width = pct + '%';
+  if (progress.phase === 'error') bar.style.background = 'linear-gradient(90deg,#ea4335,#fbbc04)';
+  else if (progress.phase === 'complete') bar.style.background = 'linear-gradient(90deg,#34a853,#4285f4)';
+  else bar.style.background = 'linear-gradient(90deg,#4285f4,#34a853)';
+
+  const processed = progress.processed_files || 0;
+  const total = progress.total_files || 0;
+  text.textContent = processed + '/' + total + (progress.current_file ? '  ' + progress.current_file : '');
+
+  const phaseLabel = _phaseLabels[progress.phase] || progress.phase;
+  phase.textContent = phaseLabel;
+
+  stats.innerHTML = '新增 <b style="color:#34a853;">' + (progress.synced_count||0) + '</b>  跳过 <b style="color:#fbbc04;">' + (progress.skipped_count||0) + '</b>  失败 <b style="color:#ea4335;">' + (progress.error_count||0) + '</b>';
+
+  const files = progress.files || [];
+  let fhtml = '';
+  files.forEach(f => {
+    const sizeStr = _formatFileSize(f.size);
+    let icon, color, detail;
+    if (f.status === 'synced') { icon = '✅'; color = '#34a853'; detail = (f.chunks||0) + '切片' + (sizeStr ? ' ' + sizeStr : ''); }
+    else if (f.status === 'skipped') { icon = '⏭️'; color = '#fbbc04'; detail = f.reason || '跳过'; }
+    else if (f.status === 'error') { icon = '❌'; color = '#ea4335'; detail = f.error || '失败'; }
+    else { icon = '⬜'; color = '#999'; detail = ''; }
+    fhtml += '<div style="padding:2px 6px;border-bottom:1px solid #f5f5f5;display:flex;align-items:center;gap:4px;">' +
+      '<span>' + icon + '</span><span style="color:' + color + ';flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(f.name) + '</span>' +
+      '<span style="color:#aaa;font-size:9px;flex-shrink:0;">' + escapeHtml(detail) + '</span></div>';
+  });
+  fileList.innerHTML = fhtml || '<div style="padding:6px;color:#999;text-align:center;">等待中...</div>';
+
+  const logs = progress.log || [];
+  if (logs.length !== _driveLastLogLen) {
+    _driveLastLogLen = logs.length;
+    let lhtml = '';
+    logs.forEach(l => {
+      let c = '#555';
+      if (l.level === 'success') c = '#34a853';
+      else if (l.level === 'error') c = '#ea4335';
+      else if (l.level === 'skip') c = '#fbbc04';
+      lhtml += '<div><span style="color:#aaa;">' + l.time + '</span> <span style="color:' + c + ';">' + escapeHtml(l.message) + '</span></div>';
+    });
+    logEl.innerHTML = lhtml;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+}
+
+function _connectDriveSSE() {
+  if (_driveSSE || _driveSSEFailed) return;
+  try {
+    _driveSSE = new EventSource('/api/dingtalk/drive/sync-progress/stream');
+    _driveSSE.onmessage = function(e) {
+      try {
+        const data = JSON.parse(e.data);
+        _updateProgressUI(data);
+        _updateSyncStatusFromProgress(data);
+      } catch(ex) {}
+    };
+    _driveSSE.onerror = function() {
+      if (_driveSSE) { _driveSSE.close(); _driveSSE = null; }
+      _driveSSEFailed = true;
+    };
+  } catch(e) {
+    _driveSSEFailed = true;
+  }
+}
+
+function _updateSyncStatusFromProgress(progress) {
+  const sel = document.getElementById('drive-sync-interval');
+  const el = document.getElementById('drive-sync-status');
+  if (!el) return;
+
+  const isSyncing = progress.is_syncing || (progress.phase && !['idle','complete','error'].includes(progress.phase));
+
+  let html = '';
+  if (isSyncing) {
+    html = '<span style="color:#1a73e8;">⏳ 同步进行中...</span>';
+  } else {
+    fetch('/api/dingtalk/drive/sync-status').then(r=>r.json()).then(data => {
+      if (sel && data.sync_interval_hours) sel.value = String(data.sync_interval_hours);
+      let h = '';
+      h += '上次同步: <b>' + _formatDateTime(data.last_sync_time) + '</b>';
+      if (data.last_sync_result && !data.last_sync_result.error) {
+        const r = data.last_sync_result;
+        h += ' <span style="color:#34a853;">(新增' + (r.synced_count||0) + ' / 跳过' + (r.skipped_count||0) + ' / 共' + (r.total_files||0) + ')</span>';
+      }
+      h += '<br>下次同步: <b>' + _formatDateTime(data.next_sync_time) + '</b>';
+      if (data.countdown_seconds > 0) {
+        h += ' <span style="color:#666;">(倒计时 ' + _formatCountdown(data.countdown_seconds) + ')</span>';
+      }
+      h += '<br>已同步文件: <b>' + (data.synced_file_count||0) + '</b> 个';
+      el.innerHTML = h;
+    }).catch(()=>{});
+    return;
+  }
+  el.innerHTML = html;
+}
+
 async function _loadDriveSyncStatus() {
+  if (_driveSSEFailed || !_driveSSE) {
+    try {
+      const res = await fetch('/api/dingtalk/drive/sync-progress');
+      if (res.ok) {
+        const progress = await res.json();
+        _updateProgressUI(progress);
+      }
+    } catch(e) {}
+  }
+
   try {
     const res = await fetch('/api/dingtalk/drive/sync-status');
     if (!res.ok) return;
@@ -2665,11 +2830,10 @@ async function _loadDriveSyncStatus() {
     const el = document.getElementById('drive-sync-status');
     if (!el) return;
 
-    let html = '';
     if (data.is_syncing) {
-      html = '<span style="color:#1a73e8;">⏳ 同步进行中...</span>';
+      el.innerHTML = '<span style="color:#1a73e8;">⏳ 同步进行中...</span>';
     } else {
-      html = '上次同步: <b>' + _formatDateTime(data.last_sync_time) + '</b>';
+      let html = '上次同步: <b>' + _formatDateTime(data.last_sync_time) + '</b>';
       if (data.last_sync_result && !data.last_sync_result.error) {
         const r = data.last_sync_result;
         html += ' <span style="color:#34a853;">(新增' + (r.synced_count||0) + ' / 跳过' + (r.skipped_count||0) + ' / 共' + (r.total_files||0) + ')</span>';
@@ -2679,8 +2843,8 @@ async function _loadDriveSyncStatus() {
         html += ' <span style="color:#666;">(倒计时 ' + _formatCountdown(data.countdown_seconds) + ')</span>';
       }
       html += '<br>已同步文件: <b>' + (data.synced_file_count||0) + '</b> 个';
+      el.innerHTML = html;
     }
-    el.innerHTML = html;
 
     if (!_driveSyncTimer) {
       _driveSyncTimer = setInterval(_loadDriveSyncStatus, 10000);
@@ -2699,25 +2863,40 @@ async function _triggerDriveSync() {
   const btn = document.getElementById('btn-sync-now');
   if (!btn) return;
   btn.disabled = true;
-  btn.textContent = '⏳ 同步中...';
+  btn.textContent = '⏳ 启动中...';
+  _driveLastLogLen = 0;
+
+  if (_driveSSE) { _driveSSE.close(); _driveSSE = null; }
+  _driveSSEFailed = false;
+
   try {
     const res = await fetch('/api/dingtalk/sync-drive', { method: 'POST' });
     const data = await res.json();
     if (data.status === 'already_running') {
       btn.textContent = '⏳ 已在运行';
-    } else if (data.status === 'ok') {
-      btn.textContent = '✅ ' + (data.synced_files||0) + '个已同步';
-    } else {
+    } else if (data.status === 'error') {
       btn.textContent = '❌ ' + (data.message||'失败');
+      setTimeout(() => { btn.disabled = false; btn.textContent = '▶ 立即同步'; }, 3000);
+      return;
     }
   } catch(e) {
     btn.textContent = '❌ 网络错误';
+    setTimeout(() => { btn.disabled = false; btn.textContent = '▶ 立即同步'; }, 3000);
+    return;
   }
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.textContent = '▶ 立即同步';
-  }, 3000);
-  _loadDriveSyncStatus();
+
+  _connectDriveSSE();
+
+  const checkDone = setInterval(() => {
+    fetch('/api/dingtalk/drive/sync-progress').then(r=>r.json()).then(p => {
+      if (!p.is_syncing && (p.phase === 'complete' || p.phase === 'error' || p.phase === 'idle')) {
+        clearInterval(checkDone);
+        btn.disabled = false;
+        btn.textContent = '▶ 立即同步';
+        _loadDriveSyncStatus();
+      }
+    }).catch(()=>{});
+  }, 2000);
 }
 
 function formatSettingLabel(key) {

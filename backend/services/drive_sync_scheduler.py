@@ -2,9 +2,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 from core.config import settings
 
@@ -26,6 +27,124 @@ class DriveSyncScheduler:
         self._timer: Optional[threading.Timer] = None
         self._running = False
         self._lock = threading.Lock()
+        self._progress_version = 0
+        self._progress = self._reset_progress()
+
+    def _reset_progress(self) -> dict:
+        return {
+            "phase": "idle",
+            "current_file": "",
+            "current_file_size": 0,
+            "total_files": 0,
+            "processed_files": 0,
+            "synced_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "started_at": None,
+            "files": [],
+            "log": [],
+            "error_message": None,
+        }
+
+    def _add_log(self, message: str, level: str = "info"):
+        with self._lock:
+            entry = {
+                "time": datetime.utcnow().strftime("%H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
+            self._progress["log"].append(entry)
+            if len(self._progress["log"]) > 100:
+                self._progress["log"] = self._progress["log"][-100:]
+            self._progress_version += 1
+
+    def on_progress(self, event: str, file_info: dict, detail: str = "", result: dict = None):
+        with self._lock:
+            if event == "listing":
+                self._progress["phase"] = "listing"
+                self._progress["current_file"] = ""
+                self._add_log(f"正在列出文件...")
+            elif event == "listed":
+                total = file_info.get("total_files", 0)
+                self._progress["total_files"] = total
+                self._progress["phase"] = "syncing"
+                self._add_log(f"共发现 {total} 个文件需要处理")
+            elif event == "downloading":
+                name = file_info.get("name", "")
+                size = file_info.get("size", 0)
+                self._progress["phase"] = "downloading"
+                self._progress["current_file"] = name
+                self._progress["current_file_size"] = size
+                size_str = f"{size/1024:.0f}KB" if size < 1024*1024 else f"{size/1024/1024:.1f}MB"
+                self._add_log(f"下载 {name} ({size_str})")
+            elif event == "downloaded":
+                name = file_info.get("name", "")
+                self._progress["phase"] = "ingesting"
+                self._add_log(f"消化 {name} → 知识库...")
+            elif event == "synced":
+                name = file_info.get("name", "")
+                chunks = 0
+                if result and result.get("rag_chunks"):
+                    chunks = result["rag_chunks"]
+                self._progress["synced_count"] += 1
+                self._progress["processed_files"] += 1
+                self._progress["current_file"] = ""
+                file_entry = {
+                    "name": name,
+                    "status": "synced",
+                    "chunks": chunks,
+                    "size": file_info.get("size", 0),
+                }
+                self._progress["files"].append(file_entry)
+                self._add_log(f"完成 {name} → {chunks}个知识切片", "success")
+            elif event == "skipped":
+                name = file_info.get("name", "")
+                reason = detail or "未修改"
+                self._progress["skipped_count"] += 1
+                self._progress["processed_files"] += 1
+                file_entry = {
+                    "name": name,
+                    "status": "skipped",
+                    "reason": reason,
+                    "size": file_info.get("size", 0),
+                }
+                self._progress["files"].append(file_entry)
+                self._add_log(f"跳过 {name} ({reason})", "skip")
+            elif event == "error":
+                name = file_info.get("name", "")
+                error_msg = detail or "unknown error"
+                self._progress["error_count"] += 1
+                self._progress["processed_files"] += 1
+                self._progress["current_file"] = ""
+                file_entry = {
+                    "name": name,
+                    "status": "error",
+                    "error": error_msg,
+                    "size": file_info.get("size", 0),
+                }
+                self._progress["files"].append(file_entry)
+                self._add_log(f"失败 {name}: {error_msg}", "error")
+            elif event == "complete":
+                self._progress["phase"] = "complete"
+                self._progress["current_file"] = ""
+                sc = self._progress["synced_count"]
+                sk = self._progress["skipped_count"]
+                ec = self._progress["error_count"]
+                self._add_log(f"同步完成! 新增{sc} 跳过{sk} 失败{ec}", "success")
+            self._progress_version += 1
+
+    def get_progress(self) -> dict:
+        with self._lock:
+            p = dict(self._progress)
+            p["files"] = list(p["files"])
+            p["log"] = list(p["log"])
+            p["is_syncing"] = self._running
+            p["version"] = self._progress_version
+            if p["total_files"] > 0:
+                p["progress_pct"] = round(p["processed_files"] / p["total_files"] * 100, 1)
+            else:
+                p["progress_pct"] = 0
+            return p
 
     def _load_state(self) -> dict:
         default = {
@@ -149,6 +268,9 @@ class DriveSyncScheduler:
                 self._schedule_next()
                 return
             self._running = True
+            self._progress = self._reset_progress()
+            self._progress["started_at"] = datetime.utcnow().isoformat()
+            self._progress_version += 1
 
         try:
             if not settings.dingtalk_drive_proxy_url or not settings.dingtalk_drive_folder_id:
@@ -159,7 +281,12 @@ class DriveSyncScheduler:
             from services.dingtalk_drive_service import DingTalkDriveService
             svc = DingTalkDriveService()
             folder_id = settings.dingtalk_drive_folder_id
-            result = svc.sync_folder(settings.dingtalk_drive_space_id, folder_id, incremental=True)
+            result = svc.sync_folder(
+                settings.dingtalk_drive_space_id, folder_id,
+                incremental=True, on_progress=self.on_progress,
+            )
+
+            self.on_progress("complete", {}, "", result)
 
             self.mark_sync_complete({
                 "synced_count": result.get("synced_count", 0),
@@ -170,9 +297,13 @@ class DriveSyncScheduler:
             logger.info(f"Drive auto-sync done: {result.get('synced_count', 0)} synced, {result.get('skipped_count', 0)} skipped")
         except Exception as e:
             logger.error(f"Drive auto-sync error: {e}")
+            self.on_progress("error", {"name": "sync"}, str(e)[:200])
+            self._progress["phase"] = "error"
+            self._progress["error_message"] = str(e)[:200]
             self.mark_sync_complete({"error": str(e)[:200]})
         finally:
-            self._running = False
+            with self._lock:
+                self._running = False
             self._schedule_next()
 
     def trigger_sync(self) -> dict:
@@ -180,17 +311,27 @@ class DriveSyncScheduler:
             if self._running:
                 return {"status": "already_running", "message": "Sync is already in progress"}
             self._running = True
+            self._progress = self._reset_progress()
+            self._progress["started_at"] = datetime.utcnow().isoformat()
+            self._progress_version += 1
 
         try:
             if not settings.dingtalk_drive_proxy_url:
+                self._running = False
                 return {"status": "error", "message": "Proxy not configured"}
             if not settings.dingtalk_drive_folder_id:
+                self._running = False
                 return {"status": "error", "message": "No folder selected"}
 
             from services.dingtalk_drive_service import DingTalkDriveService
             svc = DingTalkDriveService()
             folder_id = settings.dingtalk_drive_folder_id
-            result = svc.sync_folder(settings.dingtalk_drive_space_id, folder_id, incremental=True)
+            result = svc.sync_folder(
+                settings.dingtalk_drive_space_id, folder_id,
+                incremental=True, on_progress=self.on_progress,
+            )
+
+            self.on_progress("complete", {}, "", result)
 
             self.mark_sync_complete({
                 "synced_count": result.get("synced_count", 0),
@@ -208,7 +349,11 @@ class DriveSyncScheduler:
             }
         except Exception as e:
             logger.error(f"Drive manual sync error: {e}")
+            self.on_progress("error", {"name": "sync"}, str(e)[:200])
+            self._progress["phase"] = "error"
+            self._progress["error_message"] = str(e)[:200]
             return {"status": "error", "message": str(e)[:200]}
         finally:
-            self._running = False
+            with self._lock:
+                self._running = False
             self._schedule_next()

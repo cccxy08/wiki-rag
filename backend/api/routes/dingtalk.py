@@ -1,7 +1,10 @@
 """钉钉 Webhook 回调端点 — 签名校验 + 消息处理"""
+import asyncio
+import json
 import time
 import logging
 from fastapi import APIRouter, Request, HTTPException, Header
+from fastapi.responses import StreamingResponse
 
 from core.config import settings
 
@@ -144,7 +147,52 @@ async def sync_drive():
 async def drive_sync_status():
     from services.drive_sync_scheduler import DriveSyncScheduler
     scheduler = DriveSyncScheduler.get_instance()
-    return scheduler.get_status()
+    status = scheduler.get_status()
+    progress = scheduler.get_progress()
+    status["progress"] = progress
+    return status
+
+
+@router.get("/drive/sync-progress")
+async def drive_sync_progress():
+    from services.drive_sync_scheduler import DriveSyncScheduler
+    scheduler = DriveSyncScheduler.get_instance()
+    return scheduler.get_progress()
+
+
+@router.get("/drive/sync-progress/stream")
+async def drive_sync_progress_stream():
+    from services.drive_sync_scheduler import DriveSyncScheduler
+    scheduler = DriveSyncScheduler.get_instance()
+
+    async def event_generator():
+        last_version = -1
+        idle_count = 0
+        while True:
+            progress = scheduler.get_progress()
+            if progress.get("version", 0) != last_version:
+                last_version = progress.get("version", 0)
+                yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+                idle_count = 0
+            else:
+                idle_count += 1
+
+            if not progress.get("is_syncing") and progress.get("phase") in ("complete", "error", "idle"):
+                if idle_count > 3:
+                    yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+                    break
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/drive/sync-interval")
