@@ -29,6 +29,23 @@ class DingTalkDriveService:
     def proxy_token(self) -> str:
         return settings.dingtalk_drive_proxy_token
 
+    def _request_with_retry(self, url: str, params: dict, max_retries: int = 3, timeout: int = 30) -> Optional[httpx.Response]:
+        for attempt in range(max_retries):
+            try:
+                resp = httpx.get(url, params=params, timeout=timeout)
+                if resp.status_code == 502 and attempt < max_retries - 1:
+                    logger.warning(f"Drive proxy 502, retry {attempt+1}/{max_retries}")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                return resp
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Drive proxy error, retry {attempt+1}/{max_retries}: {e}")
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    raise
+        return None
+
     def _base_params(self) -> dict:
         params = {}
         if self.proxy_token:
@@ -57,11 +74,7 @@ class DingTalkDriveService:
                 if folder_id:
                     params["parentId"] = folder_id
 
-                resp = httpx.get(
-                    f"{self.proxy_base}/list",
-                    params=params,
-                    timeout=30,
-                )
+                resp = self._request_with_retry(f"{self.proxy_base}/list", params)
                 if resp.status_code != 200:
                     logger.error(f"Drive list failed: {resp.status_code} {resp.text[:200]}")
                     break
@@ -180,13 +193,9 @@ class DingTalkDriveService:
             if parent_id:
                 params["parentId"] = parent_id
 
-            resp = httpx.get(
-                f"{self.proxy_base}/list",
-                params=params,
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                return {"folders": [], "files": [], "error": f"HTTP {resp.status_code}"}
+            resp = self._request_with_retry(f"{self.proxy_base}/list", params)
+            if not resp or resp.status_code != 200:
+                return {"folders": [], "files": [], "error": f"HTTP {resp.status_code if resp else 'timeout'}"}
 
             data = resp.json()
             if not data.get("ok"):

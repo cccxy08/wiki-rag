@@ -42,4 +42,4 @@ services:
       - key: DINGTALK_DRIVE_PROXY_TOKEN
         value: dingdrive-proxy-2026
       - key: DINGTALK_DRIVE_USER_ID
-        value: "1"
+        value: "060837683436392262"
