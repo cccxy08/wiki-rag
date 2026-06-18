@@ -125,25 +125,37 @@ async def dingtalk_callback(
 
 @router.post("/sync-drive")
 async def sync_drive():
-    """触发钉钉云盘文件同步（供外部cron调用）"""
-    if not settings.dingtalk_enabled:
-        raise HTTPException(status_code=404, detail="DingTalk not enabled")
-
-    proxy_configured = bool(settings.dingtalk_drive_proxy_url and settings.dingtalk_drive_user_id)
-    folder_configured = bool(settings.dingtalk_drive_folder_id)
-
-    if not proxy_configured:
-        raise HTTPException(status_code=400, detail="DINGTALK_DRIVE_PROXY_URL and DINGTALK_DRIVE_USER_ID not configured")
+    if not settings.dingtalk_drive_proxy_url:
+        raise HTTPException(status_code=400, detail="DINGTALK_DRIVE_PROXY_URL not configured")
 
     try:
-        from services.dingtalk_drive_service import DingTalkDriveService
-        svc = DingTalkDriveService()
-        folder_id = settings.dingtalk_drive_folder_id if folder_configured else ""
-        result = svc.sync_folder(settings.dingtalk_drive_space_id, folder_id)
-        return {"status": "ok", "synced_files": result.get("synced_count", 0), "errors": result.get("errors", []), "total_files": result.get("total_files", 0), "skipped": result.get("skipped_count", 0)}
+        from services.drive_sync_scheduler import DriveSyncScheduler
+        scheduler = DriveSyncScheduler.get_instance()
+        result = scheduler.trigger_sync()
+        if result.get("status") == "already_running":
+            return result
+        return result
     except Exception as e:
         logger.error(f"DingTalk drive sync error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/drive/sync-status")
+async def drive_sync_status():
+    from services.drive_sync_scheduler import DriveSyncScheduler
+    scheduler = DriveSyncScheduler.get_instance()
+    return scheduler.get_status()
+
+
+@router.post("/drive/sync-interval")
+async def drive_sync_interval(hours: int = 72):
+    if hours < 1 or hours > 720:
+        raise HTTPException(status_code=400, detail="Interval must be 1-720 hours")
+    from services.drive_sync_scheduler import DriveSyncScheduler
+    scheduler = DriveSyncScheduler.get_instance()
+    scheduler.set_interval(hours)
+    settings.save_to_env({"dingtalk_drive_sync_interval_hours": hours})
+    return {"status": "ok", "interval_hours": hours}
 
 
 @router.get("/drive/list")

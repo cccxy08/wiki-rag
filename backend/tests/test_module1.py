@@ -40,13 +40,15 @@ class TestLLMProvider:
         assert detect_model_tier("qwen2.5:7b") == "small"
         assert detect_model_tier("deepseek-chat") == "large"
 
-    def test_minimax_provider_init_fails_without_key(self):
+    def test_minimax_provider_lazy_init_no_key(self):
         from core.llm_provider import MiniMaxProvider
         os.environ["MINIMAX_API_KEY"] = ""
         from core.config import settings
         settings.minimax_api_key = ""
+        provider = MiniMaxProvider()
+        assert provider._client is None
         with pytest.raises(ValueError, match="MINIMAX_API_KEY"):
-            MiniMaxProvider()
+            provider._ensure_client()
 
     def test_minimax_provider_init_with_key(self):
         from core.llm_provider import MiniMaxProvider

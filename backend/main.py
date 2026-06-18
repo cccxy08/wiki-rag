@@ -58,6 +58,11 @@ async def startup_event():
         bot = DingTalkBotService()
         bot.start_stream()
 
+    if settings.dingtalk_drive_proxy_url and settings.dingtalk_drive_folder_id:
+        from services.drive_sync_scheduler import DriveSyncScheduler
+        DriveSyncScheduler.get_instance().start()
+        print("   Drive sync scheduler started")
+
     print(f"Wiki-RAG 系统启动中...")
     print(f"   LLM Provider: {settings.llm_provider}")
     print(f"   API 文档: http://{settings.host}:{settings.port}/docs")

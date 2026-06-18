@@ -2455,6 +2455,26 @@ function _addDriveBrowser() {
       <div id="drive-monitor-selected" style="padding:8px 12px;border-top:1px solid #e0e0e0;font-size:12px;color:#666;display:none;">
         已选监控: <span id="drive-monitor-list"></span>
       </div>
+      <div id="drive-sync-panel" style="padding:10px 12px;border-top:1px solid #e0e0e0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <span style="font-size:12px;font-weight:600;">同步频率:</span>
+          <select id="drive-sync-interval" onchange="_setDriveSyncInterval(this.value)" style="font-size:12px;padding:2px 6px;border:1px solid #ccc;border-radius:4px;">
+            <option value="6">每6小时</option>
+            <option value="12">每12小时</option>
+            <option value="24">每天</option>
+            <option value="48">每2天</option>
+            <option value="72" selected>每3天</option>
+            <option value="168">每周</option>
+            <option value="720">每月</option>
+          </select>
+          <button class="btn btn-sm btn-primary" onclick="_triggerDriveSync()" id="btn-sync-now" style="font-size:12px;">
+            ▶ 立即同步
+          </button>
+        </div>
+        <div id="drive-sync-status" style="font-size:11px;color:#888;line-height:1.6;">
+          加载中...
+        </div>
+      </div>
     </div>
   `);
 
@@ -2464,6 +2484,7 @@ function _addDriveBrowser() {
     currentVal.split(',').map(s => s.trim()).filter(Boolean).forEach(id => _driveSelectedFolders.add(id));
     _renderMonitorSelected();
   }
+  _loadDriveSyncStatus();
 }
 
 let _driveSelectedFolders = new Set();
@@ -2603,6 +2624,100 @@ function _saveDriveMonitor() {
     saveBtn.textContent = '❌ 保存失败';
     saveBtn.disabled = false;
   });
+}
+
+let _driveSyncTimer = null;
+
+function _formatCountdown(seconds) {
+  if (seconds <= 0) return '即将开始';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return h + '时' + m + '分' + s + '秒';
+  if (m > 0) return m + '分' + s + '秒';
+  return s + '秒';
+}
+
+function _formatDateTime(isoStr) {
+  if (!isoStr) return '未同步';
+  try {
+    const d = new Date(isoStr);
+    return d.getFullYear() + '-' +
+      String(d.getMonth()+1).padStart(2,'0') + '-' +
+      String(d.getDate()).padStart(2,'0') + ' ' +
+      String(d.getHours()).padStart(2,'0') + ':' +
+      String(d.getMinutes()).padStart(2,'0') + ':' +
+      String(d.getSeconds()).padStart(2,'0');
+  } catch(e) { return isoStr; }
+}
+
+async function _loadDriveSyncStatus() {
+  try {
+    const res = await fetch('/api/dingtalk/drive/sync-status');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const sel = document.getElementById('drive-sync-interval');
+    if (sel && data.sync_interval_hours) {
+      sel.value = String(data.sync_interval_hours);
+    }
+
+    const el = document.getElementById('drive-sync-status');
+    if (!el) return;
+
+    let html = '';
+    if (data.is_syncing) {
+      html = '<span style="color:#1a73e8;">⏳ 同步进行中...</span>';
+    } else {
+      html = '上次同步: <b>' + _formatDateTime(data.last_sync_time) + '</b>';
+      if (data.last_sync_result && !data.last_sync_result.error) {
+        const r = data.last_sync_result;
+        html += ' <span style="color:#34a853;">(新增' + (r.synced_count||0) + ' / 跳过' + (r.skipped_count||0) + ' / 共' + (r.total_files||0) + ')</span>';
+      }
+      html += '<br>下次同步: <b>' + _formatDateTime(data.next_sync_time) + '</b>';
+      if (data.countdown_seconds > 0) {
+        html += ' <span style="color:#666;">(倒计时 ' + _formatCountdown(data.countdown_seconds) + ')</span>';
+      }
+      html += '<br>已同步文件: <b>' + (data.synced_file_count||0) + '</b> 个';
+    }
+    el.innerHTML = html;
+
+    if (!_driveSyncTimer) {
+      _driveSyncTimer = setInterval(_loadDriveSyncStatus, 10000);
+    }
+  } catch(e) {}
+}
+
+async function _setDriveSyncInterval(hours) {
+  try {
+    await fetch('/api/dingtalk/drive/sync-interval?hours=' + hours, { method: 'POST' });
+    _loadDriveSyncStatus();
+  } catch(e) {}
+}
+
+async function _triggerDriveSync() {
+  const btn = document.getElementById('btn-sync-now');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ 同步中...';
+  try {
+    const res = await fetch('/api/dingtalk/sync-drive', { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'already_running') {
+      btn.textContent = '⏳ 已在运行';
+    } else if (data.status === 'ok') {
+      btn.textContent = '✅ ' + (data.synced_files||0) + '个已同步';
+    } else {
+      btn.textContent = '❌ ' + (data.message||'失败');
+    }
+  } catch(e) {
+    btn.textContent = '❌ 网络错误';
+  }
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.textContent = '▶ 立即同步';
+  }, 3000);
+  _loadDriveSyncStatus();
 }
 
 function formatSettingLabel(key) {

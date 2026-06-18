@@ -221,9 +221,13 @@ class DingTalkDriveService:
         except Exception as e:
             return {"folders": [], "files": [], "error": str(e)[:200]}
 
-    def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True) -> dict:
-        # 支持多文件夹：folder_id可以是逗号分隔的多个ID
+    def sync_folder(self, space_id: str, folder_id: str, recursive: bool = True, incremental: bool = False) -> dict:
         folder_ids = [fid.strip() for fid in folder_id.split(",") if fid.strip()] if folder_id else [""]
+
+        scheduler = None
+        if incremental:
+            from services.drive_sync_scheduler import DriveSyncScheduler
+            scheduler = DriveSyncScheduler.get_instance()
 
         total_synced = 0
         total_skipped = 0
@@ -231,11 +235,14 @@ class DingTalkDriveService:
         total_files = 0
 
         for fid in folder_ids:
-            result = self._sync_single_folder(space_id, fid, recursive)
+            result = self._sync_single_folder(space_id, fid, recursive, scheduler)
             total_synced += result.get("synced_count", 0)
             total_skipped += result.get("skipped_count", 0)
             all_errors.extend(result.get("errors", []))
             total_files += result.get("total_files", 0)
+
+        if scheduler:
+            scheduler._save_state()
 
         return {
             "synced_count": total_synced,
@@ -244,7 +251,7 @@ class DingTalkDriveService:
             "total_files": total_files,
         }
 
-    def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True) -> dict:
+    def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True, scheduler=None) -> dict:
         files = self.list_folder_files(space_id, folder_id, recursive=recursive)
         if not files:
             logger.info("No files found in DingTalk drive folder")
@@ -275,6 +282,13 @@ class DingTalkDriveService:
                 continue
 
             file_id = file_info.get("file_id", "")
+            modify_time = file_info.get("modified_time", "")
+
+            if scheduler and not scheduler.should_sync_file(file_id, modify_time):
+                skipped_count += 1
+                logger.debug(f"Skipping unchanged: {name}")
+                continue
+
             content = self.download_file_content(space_id, file_id, name)
             if not content:
                 errors.append({"file": name, "error": "download failed"})
@@ -282,8 +296,10 @@ class DingTalkDriveService:
 
             try:
                 result = ingest.ingest_file(content, name)
-                if result.get("status") in ("success", "completed"):
+                if result.get("status") in ("success", "completed", "partial"):
                     synced_count += 1
+                    if scheduler:
+                        scheduler.mark_file_synced(file_id, modify_time, name)
                     logger.info(f"Synced: {name}")
                 else:
                     errors.append({
