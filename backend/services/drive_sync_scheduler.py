@@ -371,3 +371,6 @@ class DriveSyncScheduler:
             with self._lock:
                 self._running = False
             self._schedule_next()
+
+    def trigger_sync_background(self):
+        self.trigger_sync()

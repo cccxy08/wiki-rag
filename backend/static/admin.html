@@ -2874,6 +2874,8 @@ async function _triggerDriveSync() {
     const data = await res.json();
     if (data.status === 'already_running') {
       btn.textContent = '⏳ 已在运行';
+    } else if (data.status === 'started') {
+      btn.textContent = '⏳ 已启动';
     } else if (data.status === 'error') {
       btn.textContent = '❌ ' + (data.message||'失败');
       setTimeout(() => { btn.disabled = false; btn.textContent = '▶ 立即同步'; }, 3000);

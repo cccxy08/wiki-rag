@@ -131,16 +131,17 @@ async def sync_drive():
     if not settings.dingtalk_drive_proxy_url:
         raise HTTPException(status_code=400, detail="DINGTALK_DRIVE_PROXY_URL not configured")
 
-    try:
-        from services.drive_sync_scheduler import DriveSyncScheduler
-        scheduler = DriveSyncScheduler.get_instance()
-        result = scheduler.trigger_sync()
-        if result.get("status") == "already_running":
-            return result
-        return result
-    except Exception as e:
-        logger.error(f"DingTalk drive sync error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    from services.drive_sync_scheduler import DriveSyncScheduler
+    scheduler = DriveSyncScheduler.get_instance()
+
+    with scheduler._lock:
+        if scheduler._running:
+            return {"status": "already_running", "message": "Sync is already in progress"}
+
+    import threading
+    t = threading.Thread(target=scheduler.trigger_sync_background, daemon=True)
+    t.start()
+    return {"status": "started", "message": "Sync started in background"}
 
 
 @router.get("/drive/sync-status")
