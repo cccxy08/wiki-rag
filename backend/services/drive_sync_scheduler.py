@@ -19,7 +19,18 @@ class DriveSyncScheduler:
     def get_instance(cls) -> DriveSyncScheduler:
         if cls._instance is None:
             cls._instance = cls()
+            cls._instance._try_auto_start()
         return cls._instance
+
+    def _try_auto_start(self):
+        if self._timer:
+            return
+        if not settings.dingtalk_drive_proxy_url or not settings.dingtalk_drive_folder_id:
+            return
+        try:
+            self.start()
+        except Exception as e:
+            logger.warning(f"Auto-start scheduler failed: {e}")
 
     def __init__(self):
         try:
