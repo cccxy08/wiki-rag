@@ -58,7 +58,7 @@ async def startup_event():
         bot = DingTalkBotService()
         bot.start_stream()
 
-    if settings.dingtalk_drive_proxy_url and settings.dingtalk_drive_folder_id:
+    if False and settings.dingtalk_drive_proxy_url and settings.dingtalk_drive_folder_id:
         try:
             from services.drive_sync_scheduler import DriveSyncScheduler
             DriveSyncScheduler.get_instance().start()
