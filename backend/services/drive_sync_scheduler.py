@@ -19,18 +19,7 @@ class DriveSyncScheduler:
     def get_instance(cls) -> DriveSyncScheduler:
         if cls._instance is None:
             cls._instance = cls()
-            cls._instance._try_auto_start()
         return cls._instance
-
-    def _try_auto_start(self):
-        if self._timer:
-            return
-        if not settings.dingtalk_drive_proxy_url or not settings.dingtalk_drive_folder_id:
-            return
-        try:
-            self.start()
-        except Exception as e:
-            logger.warning(f"Auto-start scheduler failed: {e}")
 
     def __init__(self):
         try:
@@ -289,7 +278,6 @@ class DriveSyncScheduler:
         try:
             if not settings.dingtalk_drive_proxy_url or not settings.dingtalk_drive_folder_id:
                 logger.debug("Drive sync skipped: not configured")
-                self._schedule_next()
                 return
 
             from services.dingtalk_drive_service import DingTalkDriveService
@@ -373,4 +361,28 @@ class DriveSyncScheduler:
             self._schedule_next()
 
     def trigger_sync_background(self):
-        self.trigger_sync()
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("Sync timed out after 300 seconds")
+
+        try:
+            if hasattr(signal, 'SIGALRM'):
+                signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(300)
+            self.trigger_sync()
+        except TimeoutError:
+            self.on_progress("error", {"name": "sync"}, "同步超时(300秒)")
+            self._progress["phase"] = "error"
+            self._progress["error_message"] = "Sync timed out"
+            logger.error("Drive sync timed out after 300s")
+        except Exception as e:
+            self.on_progress("error", {"name": "sync"}, str(e)[:200])
+            self._progress["phase"] = "error"
+            self._progress["error_message"] = str(e)[:200]
+            logger.error(f"Drive sync background error: {e}")
+        finally:
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)
+            with self._lock:
+                self._running = False
