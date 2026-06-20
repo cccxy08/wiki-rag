@@ -6,7 +6,6 @@ from typing import Optional
 
 from core.config import settings
 from core.wiki_engine import WikiEngine
-from core.rag_engine import RAGEngine
 from core.llm_provider import get_llm, FALLBACK_MESSAGE
 from core.prompts import load
 from observability.audit import AuditLogger
@@ -22,13 +21,29 @@ class QueryService:
 
     def __init__(self):
         self.wiki = WikiEngine.get_instance()
-        self.rag = RAGEngine.get_instance()
+        self._rag = None
+        self._rag_init_failed = False
         self.llm = get_llm()
         self._query_cache: OrderedDict[str, dict] = OrderedDict()
         self._score_cache: OrderedDict[str, int] = OrderedDict()
         self._session_history: dict[str, list[dict]] = {}  # session_id -> [{question, answer}, ...]
         self._max_history = settings.max_history_rounds
         self._cache_stats = {"query_hits": 0, "query_misses": 0, "score_hits": 0, "score_misses": 0}
+
+    def _get_rag(self):
+        if self._rag is not None:
+            return self._rag
+        if self._rag_init_failed:
+            return None
+        try:
+            from core.rag_engine import RAGEngine
+            self._rag = RAGEngine.get_instance()
+            return self._rag
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).error(f"RAG init failed: {e}")
+            self._rag_init_failed = True
+            return None
 
     def query(self, question: str, top_k: int = 5, session_id: str = None) -> dict:
         start = time.time()
@@ -76,9 +91,12 @@ class QueryService:
         # 3.1 Query 改写
         rewritten_query = self._rewrite_query(question, active_entities)
         # 3.2 检索
-        docs = self.rag.retrieve(rewritten_query, top_k)
+        rag = self._get_rag()
+        if rag is None:
+            return {"answer": None, "docs": [], "source": "rag_unavailable"}
+        docs = rag.retrieve(rewritten_query, top_k)
         # 3.3 回答
-        answer = self.rag.answer(question, docs)
+        answer = rag.answer(question, docs)
 
         # 3.4 评估答案质量
         score = self._evaluate_answer(question, answer)
@@ -268,10 +286,13 @@ class QueryService:
 
     def _rag_only_query(self, question: str, top_k: int = 5) -> dict:
         """只查 RAG，不查 Wiki"""
-        docs = self.rag.retrieve(question, top_k)
+        rag = self._get_rag()
+        if rag is None:
+            return {"answer": "RAG 不可用。", "source": "rag_unavailable", "source_pages": [], "sources": [], "confidence": "low"}
+        docs = rag.retrieve(question, top_k)
         if not docs:
             return {"answer": "RAG 中未找到相关信息。", "source": "rag", "source_pages": [], "sources": [], "confidence": "low"}
-        answer = self.rag.answer(question, docs)
+        answer = rag.answer(question, docs)
         sources = [{"file": d.get("metadata", {}).get("source", ""), "score": d.get("score", 0)} for d in docs[:3]]
         return {"answer": answer, "source": "rag", "source_pages": [], "sources": sources, "confidence": "medium"}
 
