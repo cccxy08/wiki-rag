@@ -252,6 +252,18 @@ class DingTalkDriveService:
         }
 
     def _sync_single_folder(self, space_id: str, folder_id: str, recursive: bool = True, scheduler=None, on_progress=None) -> dict:
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            if mem.available < 100 * 1024 * 1024:
+                msg = f"内存不足({mem.available // 1024 // 1024}MB可用)，跳过同步"
+                logger.warning(msg)
+                if on_progress:
+                    on_progress("error", {"name": "sync"}, msg)
+                return {"synced_count": 0, "errors": [{"file": "system", "error": msg}], "total_files": 0}
+        except ImportError:
+            pass
+
         if on_progress:
             on_progress("listing", {})
 
@@ -275,8 +287,7 @@ class DingTalkDriveService:
         skipped_count = 0
         errors = []
 
-        from services.ingest_service import IngestService
-        ingest = IngestService()
+        ingest = None
 
         for file_info in files:
             if file_info["type"] != "file":
@@ -292,6 +303,14 @@ class DingTalkDriveService:
 
             file_id = file_info.get("file_id", "")
             modify_time = file_info.get("modified_time", "")
+
+            file_size = file_info.get("size", 0)
+            if file_size and file_size > 20 * 1024 * 1024:
+                skipped_count += 1
+                if on_progress:
+                    on_progress("skipped", {"name": name, "size": file_size}, "文件过大(>20MB)")
+                logger.info(f"Skipping large file: {name} ({file_size} bytes)")
+                continue
 
             if scheduler and not scheduler.should_sync_file(file_id, modify_time):
                 skipped_count += 1
@@ -313,6 +332,9 @@ class DingTalkDriveService:
                 on_progress("downloaded", {"name": name, "size": len(content)})
 
             try:
+                if ingest is None:
+                    from services.ingest_service import IngestService
+                    ingest = IngestService()
                 result = ingest.ingest_file(content, name)
                 if result.get("status") in ("success", "completed", "partial"):
                     synced_count += 1
